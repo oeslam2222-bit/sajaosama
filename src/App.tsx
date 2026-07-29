@@ -93,13 +93,7 @@ export default function App() {
   const [showSqlWizard, setShowSqlWizard] = useState<boolean>(false);
   
   // Custom screen state (Mobile-First Homepage request)
-  const [currentScreen, setCurrentScreen] = useState<'HOME' | 'RIDER_AUTH' | 'RIDER_DASHBOARD' | 'DRIVER_AUTH' | 'DRIVER_DASHBOARD' | 'ADMIN'>(() => {
-    const stored = localStorage.getItem('ezz_current_screen');
-    if (stored === 'RIDER_AUTH' || stored === 'RIDER_DASHBOARD' || stored === 'DRIVER_AUTH' || stored === 'DRIVER_DASHBOARD' || stored === 'ADMIN') {
-      return stored as 'RIDER_AUTH' | 'RIDER_DASHBOARD' | 'DRIVER_AUTH' | 'DRIVER_DASHBOARD' | 'ADMIN';
-    }
-    return 'HOME';
-  });
+  const [currentScreen, setCurrentScreen] = useState<'HOME' | 'RIDER_AUTH' | 'RIDER_DASHBOARD' | 'DRIVER_AUTH' | 'DRIVER_DASHBOARD' | 'ADMIN'>('HOME');
   const [sessionLoaded, setSessionLoaded] = useState(false);
   // Guards the stats auto-save effect: it must NOT run until the initial
   // stats have been loaded from Supabase, otherwise the default values would
@@ -522,20 +516,12 @@ export default function App() {
   const [showInstallWizard, setShowInstallWizard] = useState<boolean>(false);
 
   // Driver actively logged in state (persisted locally)
-  const [driverIsLoggedIn, setDriverIsLoggedIn] = useState<boolean>(() => {
-    return localStorage.getItem('ezz_driver_logged_in') === 'true';
-  });
+  const [driverIsLoggedIn, setDriverIsLoggedIn] = useState<boolean>(false);
 
   // Admin login states (persisted locally)
-  const [adminIsLoggedIn, setAdminIsLoggedIn] = useState<boolean>(() => {
-    return localStorage.getItem('ezz_admin_logged_in') === 'true';
-  });
-  const [adminPhone, setAdminPhone] = useState<string>(() => {
-    return localStorage.getItem('ezz_admin_phone') || '';
-  });
-  const [adminPassword, setAdminPassword] = useState<string>(() => {
-    return localStorage.getItem('ezz_admin_password') || '';
-  });
+  const [adminIsLoggedIn, setAdminIsLoggedIn] = useState<boolean>(false);
+  const [adminPhone, setAdminPhone] = useState<string>('');
+  const [adminPassword, setAdminPassword] = useState<string>('');
   const [adminLoginError, setAdminLoginError] = useState('');
 
   // Legal Modal State (Terms & Conditions / Privacy Policy)
@@ -655,26 +641,6 @@ export default function App() {
       navigator.geolocation.clearWatch(watcherId);
     };
   }, [driverIsLoggedIn, selectedDriverId, currentDriverIsOnline, lowDataMode]);
-
-  useEffect(() => {
-    localStorage.setItem('ezz_driver_logged_in', driverIsLoggedIn ? 'true' : 'false');
-  }, [driverIsLoggedIn]);
-
-  useEffect(() => {
-    localStorage.setItem('ezz_admin_logged_in', adminIsLoggedIn ? 'true' : 'false');
-  }, [adminIsLoggedIn]);
-
-  useEffect(() => {
-    localStorage.setItem('ezz_admin_phone', adminPhone);
-  }, [adminPhone]);
-
-  useEffect(() => {
-    localStorage.setItem('ezz_admin_password', adminPassword);
-  }, [adminPassword]);
-
-  useEffect(() => {
-    localStorage.setItem('ezz_current_screen', currentScreen);
-  }, [currentScreen]);
 
   // Screen access guard: redirect to HOME if user tries to access a protected screen without login
   useEffect(() => {
@@ -3882,12 +3848,10 @@ export default function App() {
                                   setAdminLoginError(lang === 'ar' ? 'يوجد حساب راكب/سائق مسجل حالياً. يرجى تسجيل الخروج أولاً.' : 'A rider/driver account is already logged in. Please logout first.');
                                   return;
                                 }
-                                const admin = await authenticateAdmin(adminPhone.trim(), adminPassword.trim());
-                                if (admin) {
-                                  setAdminIsLoggedIn(true);
-                                  localStorage.setItem('ezz_admin_phone', adminPhone.trim());
-                                  localStorage.setItem('ezz_admin_password', adminPassword.trim());
-                                  if (supabaseConnected) {
+                                 const admin = await authenticateAdmin(adminPhone.trim(), adminPassword.trim());
+                                 if (admin) {
+                                   setAdminIsLoggedIn(true);
+                                   if (supabaseConnected) {
                                     await clearSession('RIDER');
                                     await clearSession('DRIVER');
                                     await saveSession('ADMIN', admin.id);
