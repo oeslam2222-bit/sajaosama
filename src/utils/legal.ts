@@ -4,62 +4,78 @@
 
 export const PRIVACY_POLICY = {
   en: {
-    title: 'Privacy Policy',
-    lastUpdated: '2026-07-12',
+    title: 'Privacy Policy – Captain Ezz',
+    lastUpdated: '2026-07-27',
     sections: [
       {
-        heading: 'Data Collection',
-        content: 'Captain Ezz collects personal information including name, phone number, and location data to provide ride-hailing services. Driver documents (National ID, License) are collected for verification purposes only.',
+        heading: '1. Information We Collect',
+        content: 'We collect name, phone number, National ID (drivers only), vehicle & license details (drivers), live geographic location during app usage, and trip history.',
       },
       {
-        heading: 'Data Usage',
-        content: 'Your data is used to match riders with drivers, process payments, and improve service quality. Location data is used in real-time for dispatch and navigation during active trips.',
+        heading: '2. Use of Information',
+        content: 'Data is used for managing accounts, executing ride requests, enhancing service quality, user communication, and maintaining application security and fraud prevention.',
       },
       {
-        heading: 'Data Sharing',
-        content: 'Personal data is shared only between matched rider and driver during active trips. We do not sell or share your data with third parties for marketing purposes.',
+        heading: '3. Data Protection',
+        content: 'Appropriate technical security measures are enforced to protect user data from unauthorized access, modification, or loss.',
       },
       {
-        heading: 'Data Security',
-        content: 'We employ industry-standard encryption (AES-256, PBKDF2 with 100,000 iterations) to protect your data. Passwords are hashed and never stored in plaintext.',
+        heading: '4. Data Sharing',
+        content: 'We do not sell, rent, or share user data with third parties except when required by law, to protect rights and safety, or with explicit user consent.',
       },
       {
-        heading: 'Data Retention',
-        content: 'Trip history is retained for 7 years for legal compliance. You may request data deletion by contacting support.',
+        heading: '5. Geographic Location',
+        content: 'Geographic location is strictly used to locate riders and drivers, calculate trip distances, and facilitate seamless ride delivery.',
       },
       {
-        heading: 'Your Rights',
-        content: 'You have the right to access, correct, or delete your personal data. Contact us via WhatsApp support for data-related requests.',
+        heading: '6. User Rights',
+        content: 'Users have the right to request updating or deleting their data or suspending their account by contacting application administration.',
+      },
+      {
+        heading: '7. Amendments',
+        content: 'Captain Ezz reserves the right to modify the Privacy Policy at any time, with notifications provided for substantial updates.',
+      },
+      {
+        heading: '8. Contact Us',
+        content: 'For any privacy or data inquiries, you can reach out to Captain Ezz administration via official in-app support channels.',
       },
     ],
   },
   ar: {
-    title: 'سياسة الخصوصية',
-    lastUpdated: '2026-07-12',
+    title: '🔒 سياسة الخصوصية – تطبيق كابتن عز',
+    lastUpdated: '2026-07-27',
     sections: [
       {
-        heading: 'جمع البيانات',
-        content: 'يجمع تطبيق كابتن عز معلومات شخصية تشمل الاسم ورقم الهاتف وبيانات الموقع لتقديم خدمات النقل. مستندات السائق (البطاقة الشخصية، الرخصة) يتم جمعها لأغراض التحقق فقط.',
+        heading: '1. البيانات التي نقوم بجمعها',
+        content: 'قد يقوم التطبيق بجمع البيانات التالية: الاسم، رقم الهاتف، رقم البطاقة القومية (للسائقين فقط)، بيانات المركبة ورخصة القيادة (للسائقين)، الموقع الجغرافي أثناء استخدام التطبيق، وبيانات الرحلات وسجل الطلبات.',
       },
       {
-        heading: 'استخدام البيانات',
-        content: 'تُستخدم بياناتك لمطابقة الركاب مع السائقين ومعالجة المدفوعات وتحسين جودة الخدمة. بيانات الموقع تُستخدم في الوقت الفعلي للتوزيع والملاحة خلال الرحلات النشطة.',
+        heading: '2. استخدام البيانات',
+        content: 'تُستخدم البيانات للأغراض التالية: إنشاء وإدارة الحسابات، تنفيذ طلبات الرحلات، تحسين جودة الخدمة، التواصل مع المستخدم عند الحاجة، والحفاظ على أمن التطبيق ومنع الاحتيال.',
       },
       {
-        heading: 'مشاركة البيانات',
-        content: 'يتم مشاركة البيانات الشخصية فقط بين الراكب والسائق المطابق خلال الرحلة النشطة. لا نبيع أو نشارك بياناتك مع طرف ثالث لأغراض تسويقية.',
+        heading: '3. حماية البيانات',
+        content: 'يتم اتخاذ الإجراءات الفنية المناسبة لحماية بيانات المستخدمين من الوصول غير المصرح به أو التعديل أو الفقدان.',
       },
       {
-        heading: 'أمن البيانات',
-        content: 'نستخدم معايير التشفير الصناعية (AES-256، PBKDF2 مع 100,000 تكرار) لحماية بياناتك. كلمات المرور مشفرة ولا تُخزن أبداً كنص عادي.',
+        heading: '4. مشاركة البيانات',
+        content: 'لا يتم بيع أو تأجير أو مشاركة بيانات المستخدمين مع أي طرف ثالث، إلا إذا كان ذلك مطلوبًا بموجب القانون، أو لحماية حقوق وسلامة المستخدمين والتطبيق، أو عند موافقة المستخدم بشكل صريح.',
       },
       {
-        heading: 'الاحتفاظ بالبيانات',
-        content: 'يتم الاحتفاظ بسجل الرحلات لمدة 7 سنوات للامتثال القانوني. يمكنك طلب حذف بياناتك بالتواصل مع الدعم.',
+        heading: '5. الموقع الجغرافي',
+        content: 'يستخدم التطبيق الموقع الجغرافي فقط لتحديد موقع الراكب والسائق، وحساب المسافة، وتسهيل تنفيذ الرحلات.',
       },
       {
-        heading: 'حقوقك',
-        content: 'لديك الحق في الوصول إلى بياناتك الشخصية أو تعديلها أو حذفها. تواصل معنا عبر واتساب الدعم لطلبات البيانات.',
+        heading: '6. حقوق المستخدم',
+        content: 'يحق للمستخدم طلب تحديث أو حذف بياناته أو إيقاف حسابه من خلال التواصل مع إدارة التطبيق، مع مراعاة الالتزامات القانونية إن وجدت.',
+      },
+      {
+        heading: '7. التعديلات',
+        content: 'يحتفظ تطبيق كابتن عز بحق تعديل سياسة الخصوصية في أي وقت، وسيتم إشعار المستخدمين عند وجود تعديلات جوهرية.',
+      },
+      {
+        heading: '8. التواصل معنا',
+        content: 'لأي استفسار يتعلق بالخصوصية أو البيانات، يمكن التواصل مع إدارة تطبيق كابتن عز عبر وسائل التواصل الرسمية داخل التطبيق.',
       },
     ],
   },
@@ -67,70 +83,78 @@ export const PRIVACY_POLICY = {
 
 export const TERMS_OF_SERVICE = {
   en: {
-    title: 'Terms of Service',
-    lastUpdated: '2026-07-12',
+    title: 'Terms & Conditions – Captain Ezz',
+    lastUpdated: '2026-07-27',
     sections: [
       {
-        heading: 'Acceptance of Terms',
-        content: 'By using Captain Ezz, you agree to these terms. If you do not agree, please do not use the service.',
+        heading: '1. Service Delivery Policy',
+        content: 'All Captain Ezz drivers commit to providing a safe, respectful, and high-quality transportation service to all riders while abiding by traffic laws, professional ethics, and good customer care.',
       },
       {
-        heading: 'Service Description',
-        content: 'Captain Ezz is a ride-hailing platform that connects riders with drivers. We are not a transportation provider and do not own or operate vehicles.',
+        heading: '2. Driver Registration',
+        content: 'To register and work through the app, drivers must provide: Full Name, Mobile Phone Number, Valid National ID (14 digits), Valid Driver License, Valid Vehicle License, and Vehicle Details (Type, Model, Color, Plate Number).',
       },
       {
-        heading: 'User Responsibilities',
-        content: 'Riders must provide accurate pickup/dropoff locations and pay fares promptly. Drivers must maintain valid documentation, drive safely, and follow traffic laws.',
+        heading: '3. Account Verification',
+        content: 'All registration requests are subject to admin review and approval before account activation. Administration reserves the right to reject or suspend any account in case of incomplete data or violation of terms.',
       },
       {
-        heading: 'Payments',
-        content: 'Fares are calculated based on distance and vehicle type. Payments are made in cash directly to drivers. The platform commission is automatically deducted from driver earnings.',
+        heading: '4. Driver Obligations',
+        content: 'Drivers must adhere to schedules and respect customers, maintain vehicle cleanliness and professional appearance, abide by approved in-app pricing, refrain from demanding extra fees outside the app fare, and never share their account with anyone else.',
       },
       {
-        heading: 'Cancellations',
-        content: 'Riders may cancel trips before driver acceptance without penalty. Cancellations after driver acceptance may incur a cancellation fee.',
+        heading: '5. Rider Obligations',
+        content: 'Riders must enter accurate trip details, respect the driver and refrain from misconduct, pay the trip fare as shown in the app, and maintain vehicle safety during the ride.',
       },
       {
-        heading: 'Limitation of Liability',
-        content: 'Captain Ezz is not liable for accidents, injuries, or damages during rides. We are a technology platform facilitating connections between independent parties.',
+        heading: '6. Trip Cancellations',
+        content: 'Either party may cancel a trip before it starts in accordance with app policy. Actions may be taken in case of repeated unjustifiable cancellations.',
       },
       {
-        heading: 'Dispute Resolution',
-        content: 'Disputes between riders and drivers should be resolved through our support channel. We reserve the right to suspend accounts involved in fraudulent activity.',
+        heading: '7. Confidentiality & Privacy',
+        content: 'Captain Ezz is committed to maintaining user data confidentiality and will not share it with any entity unless required by law or to deliver the service.',
+      },
+      {
+        heading: '8. Acceptance of Terms',
+        content: 'By using the Captain Ezz application, the user acknowledges reading, accepting, and agreeing to comply with these terms and conditions.',
       },
     ],
   },
   ar: {
-    title: 'شروط الاستخدام',
-    lastUpdated: '2026-07-12',
+    title: '⚖️ الشروط والأحكام – تطبيق كابتن عز',
+    lastUpdated: '2026-07-27',
     sections: [
       {
-        heading: 'قبول الشروط',
-        content: 'باستخدام تطبيق كابتن عز، فإنك توافق على هذه الشروط. إذا كنت لا توافق، يرجى عدم استخدام الخدمة.',
+        heading: '1. سياسة تقديم الخدمة',
+        content: 'يلتزم جميع كباتن تطبيق كابتن عز بتقديم خدمة نقل آمنة، محترمة، وذات جودة عالية لجميع الركاب، مع الالتزام بقواعد المرور، وأخلاقيات العمل، وحسن التعامل مع العملاء.',
       },
       {
-        heading: 'وصف الخدمة',
-        content: 'كابتن عز هو منصة حجز رحلات تربط الركاب بالسائقين. نحن لسنا مزود خدمة نقل ولا نمتلك أو ندرك مركبات.',
+        heading: '2. تسجيل السائق',
+        content: 'للتسجيل والعمل من خلال التطبيق، يجب على السائق تقديم البيانات التالية: الاسم الثنائي، رقم الهاتف المحمول، رقم البطاقة القومية (14 رقمًا)، رقم رخصة القيادة السارية، رقم رخصة المركبة السارية، وبيانات المركبة (النوع – الموديل – اللون – رقم اللوحة).',
       },
       {
-        heading: 'مسؤوليات المستخدم',
-        content: 'يجب على الركاب تقديم مواقع صحيحة للركوب والوصول ودفع الأجرة promptly. يجب على السائقين الحفاظ على مستندات صالحة والقيادة بأمان واتباع قوانين المرور.',
+        heading: '3. مراجعة الحسابات',
+        content: 'تخضع جميع طلبات التسجيل للمراجعة واعتماد الإدارة قبل تفعيل الحساب، ويحق للإدارة رفض أو تعليق أي حساب في حال عدم اكتمال البيانات أو مخالفة الشروط.',
       },
       {
-        heading: 'المدفوعات',
-        content: 'يتم حساب الأجرة بناءً على المسافة ونوع المركبة. المدفوعات نقدية مباشرة للسائقين. عمولة المنصة تُخصم تلقائياً من أرباح السائق.',
+        heading: '4. التزامات السائق',
+        content: 'يلتزم السائق بما يلي: الالتزام بالمواعيد واحترام العملاء، الحفاظ على نظافة المركبة والمظهر اللائق، الالتزام بالتسعيرة المعتمدة داخل التطبيق، عدم طلب أي مبالغ إضافية من الراكب خارج السعر المحدد بالتطبيق، وعدم مشاركة حسابه مع أي شخص آخر.',
       },
       {
-        heading: 'الإلغاء',
-        content: 'يمكن للركاب إلغاء الرحلات قبل قبول السائق بدون penalty. الإلغاء بعد قبول السائق قد يتسبب في رسوم إلغاء.',
+        heading: '5. التزامات الراكب',
+        content: 'يلتزم الراكب بما يلي: إدخال بيانات الرحلة بشكل صحيح، احترام السائق وعدم الإساءة إليه، سداد قيمة الرحلة كما هي موضحة داخل التطبيق، والمحافظة على سلامة المركبة أثناء الرحلة.',
       },
       {
-        heading: 'حدود المسؤولية',
-        content: 'كابتن عز غير مسؤول عن الحوادث أو الإصابات أو الأضرار خلال الرحلات. نحن منصة تقنية تسهل الاتصال بين أطراف مستقلة.',
+        heading: '6. إلغاء الرحلات',
+        content: 'يجوز لأي من الطرفين إلغاء الرحلة قبل بدايتها وفق سياسة التطبيق، وقد يتم اتخاذ إجراءات في حالة الإلغاءات المتكررة دون سبب مقبول.',
       },
       {
-        heading: 'حل النزاعات',
-        content: 'يجب حل النزاعات بين الركاب والسائقين through قناة الدعم لدينا. نحتفظ بالحق في تعليق الحسابات المتورطة في نشاط احتيالي.',
+        heading: '7. الخصوصية',
+        content: 'يلتزم تطبيق كابتن عز بالحفاظ على سرية بيانات المستخدمين وعدم مشاركتها مع أي جهة إلا إذا كان ذلك مطلوبًا بموجب القانون أو لتقديم الخدمة.',
+      },
+      {
+        heading: '8. قبول الشروط',
+        content: 'باستخدام تطبيق كابتن عز، فإن المستخدم يقر بأنه قرأ هذه الشروط والأحكام ووافق عليها ويلتزم بتنفيذها.',
       },
     ],
   },
