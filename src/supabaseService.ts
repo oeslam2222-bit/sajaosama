@@ -183,7 +183,22 @@ CREATE TABLE IF NOT EXISTS ezz_trips_history (
    dispatch_timer_max INTEGER,
    applied_promo_code TEXT,
    applied_promo_discount DOUBLE PRECISION
- );
+  );
+
+-- ============================================================
+-- 5a. جدول رسائل الشات
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ezz_chat_messages (
+  id TEXT PRIMARY KEY,
+  trip_id TEXT NOT NULL,
+  sender TEXT NOT NULL,
+  text TEXT NOT NULL,
+  timestamp TEXT NOT NULL,
+  created_at TEXT DEFAULT NOW()::TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ezz_chat_messages_trip_id ON ezz_chat_messages(trip_id);
+CREATE INDEX IF NOT EXISTS idx_ezz_chat_messages_created_at ON ezz_chat_messages(created_at);
 
 -- ============================================================
 -- 5b. جدول الأكواد الترويجية
@@ -826,7 +841,7 @@ export const fetchPendingTrips = async (): Promise<Trip[]> => {
 };
 
 // Save Active Trip
-export const saveActiveTrip = async (trip: Trip | null): Promise<boolean> => {
+export const saveActiveTrip = async (trip: Trip | null, isAccepting: boolean = false): Promise<boolean> => {
   try {
     if (!trip) {
       const { error } = await supabase.from('ezz_active_trip').delete().neq('id', '00000000-0000-0000-0000-000000000000');
@@ -835,30 +850,26 @@ export const saveActiveTrip = async (trip: Trip | null): Promise<boolean> => {
       return true;
     }
 
-    console.log('[saveActiveTrip] Saving trip to DB:', trip.id, 'status:', trip.status, 'offeredDriverIds:', trip.offeredDriverIds);
+    console.log('[saveActiveTrip] Saving trip to DB:', trip.id, 'status:', trip.status, 'offeredDriverIds:', trip.offeredDriverIds, 'isAccepting:', isAccepting);
 
     // ── Race-condition guard for ACCEPTED ──────────────────────────────
     // Only one driver may win the accepting race.  We issue a conditional
     // UPDATE that succeeds only when the trip is still SEARCHING.
     // If another driver already accepted *and* updated first, this returns
     // false so the losing driver can revert the optimistic UI.
-    if (trip.status === 'ACCEPTED') {
-      // Map the trip to DB format for the update payload
+    if (isAccepting) {
       const payload = mapTripToDB(trip);
       const { data, error } = await supabase
         .from('ezz_active_trip')
         .update(payload)
         .eq('id', trip.id)
-        .eq('status', 'SEARCHING')   // 👈  only SEARCHING trips can be accepted
+        .eq('status', 'SEARCHING')
         .select('id')
         .maybeSingle();
 
       if (error) throw error;
 
       if (!data) {
-        // No row matched the id + status='SEARCHING' condition, which means
-        // either the trip was already accepted by another driver or it was
-        // cancelled / deleted.
         console.warn('[saveActiveTrip] Race lost — trip no longer SEARCHING (already accepted by another driver)');
         return false;
       }
@@ -867,7 +878,7 @@ export const saveActiveTrip = async (trip: Trip | null): Promise<boolean> => {
       return true;
     }
 
-    // ── All other statuses (including SEARCHING updates) use upsert ────
+    // ── All other statuses (including SEARCHING updates and ACCEPTED chat updates) use upsert ──
     const { error: insertError } = await supabase
       .from('ezz_active_trip')
       .upsert(mapTripToDB(trip), { onConflict: 'id' });
@@ -954,6 +965,41 @@ export const saveTripToHistory = async (trip: Trip): Promise<boolean> => {
   } catch (err: any) {
     console.warn('Could not save trip to history in Supabase:', err.message);
     return false;
+  }
+};
+
+// --- CHAT MESSAGES ---
+
+export const saveChatMessage = async (tripId: string, message: { id: string; sender: 'RIDER' | 'DRIVER'; text: string; timestamp: string }): Promise<boolean> => {
+  try {
+    const { error } = await supabase.from('ezz_chat_messages').insert({
+      id: message.id,
+      trip_id: tripId,
+      sender: message.sender,
+      text: message.text,
+      timestamp: message.timestamp,
+      created_at: new Date().toISOString(),
+    });
+    if (error) throw error;
+    return true;
+  } catch (err: any) {
+    console.warn('Could not save chat message to Supabase:', err.message);
+    return false;
+  }
+};
+
+export const fetchChatMessages = async (tripId: string): Promise<{ id: string; sender: 'RIDER' | 'DRIVER'; text: string; timestamp: string }[]> => {
+  try {
+    const { data, error } = await supabase
+      .from('ezz_chat_messages')
+      .select('id,sender,text,timestamp')
+      .eq('trip_id', tripId)
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    return data || [];
+  } catch (err: any) {
+    console.warn('Could not fetch chat messages from Supabase:', err.message);
+    return [];
   }
 };
 
@@ -1514,7 +1560,7 @@ const getDeviceId = (): string => {
 
 export const saveSession = async (role: 'RIDER' | 'DRIVER' | 'ADMIN', userId: string): Promise<boolean> => {
   try {
-    const deviceId = `tab_${role.toLowerCase()}_${userId}_${Math.random().toString(36).substring(2, 6)}`;
+    const deviceId = `persist_${role.toLowerCase()}_${userId}`;
     try {
       sessionStorage.setItem('ezz_tab_device_id', deviceId);
     } catch {}

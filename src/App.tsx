@@ -37,7 +37,9 @@ import {
   markPromoCodeAsUsed,
   fetchRegions,
   fetchAds,
-  fetchPendingTrips
+  fetchPendingTrips,
+  saveChatMessage,
+  fetchChatMessages
 } from './supabaseService';
 import {
   requestNotificationPermission,
@@ -93,8 +95,21 @@ export default function App() {
   const [showSqlWizard, setShowSqlWizard] = useState<boolean>(false);
   
   // Custom screen state (Mobile-First Homepage request)
-  const [currentScreen, setCurrentScreen] = useState<'HOME' | 'RIDER_AUTH' | 'RIDER_DASHBOARD' | 'DRIVER_AUTH' | 'DRIVER_DASHBOARD' | 'ADMIN'>('HOME');
+  const [currentScreen, setCurrentScreen] = useState<'HOME' | 'RIDER_AUTH' | 'RIDER_DASHBOARD' | 'DRIVER_AUTH' | 'DRIVER_DASHBOARD' | 'ADMIN'>(() => {
+    try {
+      const stored = sessionStorage.getItem('ezz_current_screen');
+      if (stored === 'RIDER_AUTH' || stored === 'RIDER_DASHBOARD' || stored === 'DRIVER_AUTH' || stored === 'DRIVER_DASHBOARD' || stored === 'ADMIN') {
+        return stored as 'RIDER_AUTH' | 'RIDER_DASHBOARD' | 'DRIVER_AUTH' | 'DRIVER_DASHBOARD' | 'ADMIN';
+      }
+    } catch {}
+    return 'HOME';
+  });
   const [sessionLoaded, setSessionLoaded] = useState(false);
+  useEffect(() => {
+    try {
+      sessionStorage.setItem('ezz_current_screen', currentScreen);
+    } catch {}
+  }, [currentScreen]);
   // Guards the stats auto-save effect: it must NOT run until the initial
   // stats have been loaded from Supabase, otherwise the default values would
   // overwrite the admin's saved prices on every refresh.
@@ -649,8 +664,14 @@ export default function App() {
       setCurrentScreen('HOME');
     } else if (currentScreen === 'DRIVER_DASHBOARD' && !driverIsLoggedIn) {
       setCurrentScreen('HOME');
+    } else if (currentScreen === 'HOME' && sessionLoaded) {
+      if (rider.isLoggedIn && activeTrip && activeTrip.riderId === rider.id) {
+        setCurrentScreen('RIDER_DASHBOARD');
+      } else if (driverIsLoggedIn && activeTrip && activeTrip.driverId === selectedDriverId) {
+        setCurrentScreen('DRIVER_DASHBOARD');
+      }
     }
-  }, [currentScreen, rider.isLoggedIn, driverIsLoggedIn, sessionLoaded]);
+  }, [currentScreen, rider.isLoggedIn, driverIsLoggedIn, sessionLoaded, activeTrip, selectedDriverId]);
 
   // No localStorage persistence: state is sourced entirely from Supabase.
 
@@ -694,7 +715,23 @@ export default function App() {
 
         const dbActiveTrip = await fetchActiveTrip(driverIsLoggedIn ? selectedDriverId : undefined, driverIsLoggedIn ? 'driver' : undefined);
         if (dbActiveTrip && dbActiveTrip !== 'NO_TABLE') {
-          setActiveTripWithTracking(dbActiveTrip);
+          let enrichedTrip = dbActiveTrip;
+          if (supabaseConnected && enrichedTrip.id) {
+            const remoteChat = await fetchChatMessages(enrichedTrip.id);
+            if (remoteChat.length > 0) {
+              const remoteMap = new Map(remoteChat.map(m => [m.id, m]));
+              const localMsgs = enrichedTrip.chatMessages || [];
+              const merged = [...localMsgs];
+              remoteChat.forEach(rm => {
+                if (!merged.find(lm => lm.id === rm.id)) {
+                  merged.push(rm);
+                }
+              });
+              merged.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+              enrichedTrip = { ...enrichedTrip, chatMessages: merged };
+            }
+          }
+          setActiveTripWithTracking(enrichedTrip);
         }
 
         // Load session BEFORE fetching trips so we can filter by user
@@ -762,6 +799,15 @@ export default function App() {
           }
         }
         setSessionLoaded(true);
+
+        // If user is logged in and has an active trip, ensure they land on the correct dashboard
+        if (session && activeTrip) {
+          if (session.role === 'RIDER' && activeTrip.riderId === session.userId && currentScreen !== 'RIDER_DASHBOARD') {
+            setCurrentScreen('RIDER_DASHBOARD');
+          } else if (session.role === 'DRIVER' && activeTrip.driverId === session.userId && currentScreen !== 'DRIVER_DASHBOARD') {
+            setCurrentScreen('DRIVER_DASHBOARD');
+          }
+        }
       } else {
         setSupabaseConnected(false);
         console.warn('⚠️ Supabase tables not created yet or credentials offline. Using secure LocalStorage engine.');
@@ -1795,6 +1841,7 @@ export default function App() {
       const updated = { ...prev, chatMessages };
       if (supabaseConnected) {
         saveActiveTrip(updated).catch(() => {});
+        saveChatMessage(activeTrip.id, newMessage).catch(() => {});
       }
       return updated;
     });
@@ -1946,7 +1993,7 @@ export default function App() {
       if (drv) {
         saveDriver({ ...drv, status: 'BUSY' }).catch(() => {});
       }
-      saveActiveTrip(acceptedTrip).then((ok) => {
+      saveActiveTrip(acceptedTrip, true).then((ok) => {
         console.log('[handleAcceptTrip] saveActiveTrip ACCEPTED result:', ok);
         if (!ok) {
           // Race condition lost — another driver accepted first! Revert local state.
@@ -1971,7 +2018,7 @@ export default function App() {
       const driverLng = drv?.lng ?? (drv ? getCoordsFromXY(drv.currentX, drv.currentY).lng : undefined);
 
       if (driverLat !== undefined && driverLng !== undefined) {
-        const route = await getNavigationRoute(driverLat, driverLng, activeTrip.pickup, activeTrip.dropoff);
+        const route = await getNavigationRoute(driverLat, driverLng, acceptedTrip.pickup, acceptedTrip.dropoff);
         if (route) {
           const routeUpdated: Trip = {
             ...acceptedTrip,
@@ -1992,15 +2039,15 @@ export default function App() {
       playNotificationSound('trip_accepted');
       speakText(
         lang === 'ar'
-          ? `تم قبول الرحلة بنجاح! العميل ${activeTrip.riderName || ''} بانتظارك.`
-          : `Ride accepted successfully! Client ${activeTrip.riderName || ''} is waiting for you.`,
+          ? `تم قبول الرحلة بنجاح! العميل ${acceptedTrip.riderName || ''} بانتظارك.`
+          : `Ride accepted successfully! Client ${acceptedTrip.riderName || ''} is waiting for you.`,
         lang === 'ar' ? 'ar-EG' : 'en-US'
       );
       sendNativeNotification(
         lang === 'ar' ? '✅ تم قبول الرحلة!' : '✅ Ride Accepted!',
         lang === 'ar'
-          ? `أنت الآن في الطريق إلى العميل من ${activeTrip.pickup.nameAr} إلى ${activeTrip.dropoff.nameAr}.`
-          : `You are now heading to the client from ${activeTrip.pickup.nameEn} to ${activeTrip.dropoff.nameEn}.`,
+          ? `أنت الآن في الطريق إلى العميل من ${acceptedTrip.pickup.nameAr} إلى ${acceptedTrip.dropoff.nameAr}.`
+          : `You are now heading to the client from ${acceptedTrip.pickup.nameEn} to ${acceptedTrip.dropoff.nameEn}.`,
         '🚗'
       );
       startTitleFlash(lang === 'ar' ? '🚗 تم قبول الرحلة!' : '🚗 Ride Accepted!');
