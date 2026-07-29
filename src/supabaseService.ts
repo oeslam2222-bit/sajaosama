@@ -1501,16 +1501,9 @@ export const logAuditToDB = async (entry: AuditLogEntry): Promise<boolean> => {
 
 const getDeviceId = (): string => {
   try {
-    // Priority to tab-isolated device ID so multiple tabs can run different accounts concurrently
     let deviceId = sessionStorage.getItem('ezz_tab_device_id');
     if (!deviceId) {
-      const sharedDeviceId = localStorage.getItem('ezz_device_id');
-      if (sharedDeviceId) {
-        deviceId = sharedDeviceId;
-      } else {
-        deviceId = `dev_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
-        localStorage.setItem('ezz_device_id', deviceId);
-      }
+      deviceId = `dev_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
       sessionStorage.setItem('ezz_tab_device_id', deviceId);
     }
     return deviceId;
@@ -1524,7 +1517,6 @@ export const saveSession = async (role: 'RIDER' | 'DRIVER' | 'ADMIN', userId: st
     const deviceId = `tab_${role.toLowerCase()}_${userId}_${Math.random().toString(36).substring(2, 6)}`;
     try {
       sessionStorage.setItem('ezz_tab_device_id', deviceId);
-      localStorage.setItem('ezz_device_id', deviceId);
     } catch {}
 
     const id = `session_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
