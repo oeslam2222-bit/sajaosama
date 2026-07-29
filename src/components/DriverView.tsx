@@ -851,7 +851,7 @@ export const DriverView: React.FC<DriverViewProps> = ({
             </div>
 
             {/* Chat with Rider Section */}
-            {activeTrip && activeTrip.status === 'STARTED' && (
+            {activeTrip && activeTrip.driverId && (
             <div className="bg-white border border-slate-150 p-3 rounded-2xl space-y-2 pointer-events-auto">
               <div className="flex items-center gap-1.5 text-slate-700 font-bold text-xs pb-1 border-b border-slate-100">
                 <MessageSquare className="w-3.5 h-3.5 text-blue-600 animate-pulse" />
