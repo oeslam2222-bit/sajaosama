@@ -19,6 +19,8 @@ interface CityMapProps {
   readOnly?: boolean;
   currentDriverPosition?: { lat: number; lng: number } | null;
   navigationRoute?: [number, number][] | null;
+  dataSaverMode?: boolean;
+  onToggleDataSaver?: () => void;
 }
 
 export const CityMap: React.FC<CityMapProps> = ({
@@ -38,6 +40,8 @@ export const CityMap: React.FC<CityMapProps> = ({
   readOnly = false,
   currentDriverPosition,
   navigationRoute,
+  dataSaverMode = false,
+  onToggleDataSaver,
 }) => {
   const [mapMode, setMapMode] = useState<'PICKUP' | 'DROPOFF'>('PICKUP');
   const [isGeocoding, setIsGeocoding] = useState(false);
@@ -186,9 +190,13 @@ export const CityMap: React.FC<CityMapProps> = ({
       attributionControl: true,
     });
 
-    // High quality Map tiles
+    // Low-bandwidth optimized Map tiles
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
+      maxNativeZoom: 18,
+      updateWhenIdle: dataSaverMode,
+      updateWhenZooming: !dataSaverMode,
+      keepBuffer: dataSaverMode ? 1 : 2,
       attribution: '© OpenStreetMap contributors',
     }).addTo(map);
 
@@ -651,17 +659,33 @@ export const CityMap: React.FC<CityMapProps> = ({
         </div>
       )}
 
-      {/* Guide Banner */}
+      {/* Guide Banner & Data Saver Indicator */}
       {!readOnly && (
-        <div className="absolute top-3 left-3 flex flex-col sm:flex-row items-start sm:items-center gap-1.5 pointer-events-none z-10">
-          <div className="flex items-center gap-1.5 bg-slate-950/90 backdrop-blur-md text-white px-2.5 py-1.5 rounded-lg text-[9px] font-black border border-slate-800 shadow-md">
+        <div className="absolute top-3 left-3 flex flex-col sm:flex-row items-start sm:items-center gap-1.5 pointer-events-auto z-10">
+          <div className="flex items-center gap-1.5 bg-slate-950/90 backdrop-blur-md text-white px-2.5 py-1.5 rounded-lg text-[9px] font-black border border-slate-800 shadow-md pointer-events-none">
             <Compass className="w-3.5 h-3.5 text-amber-400 animate-spin-slow" />
             <span>{lang === 'ar' ? 'اسحب الدبابيس أو اضغط على الخريطة مباشرة للتحديد' : 'DRAG PINS OR CLICK ON MAP TO SET'}</span>
           </div>
-          <div className="bg-emerald-950/90 backdrop-blur-md text-emerald-300 border border-emerald-800 px-2 py-1 rounded-lg text-[9px] font-black shadow-md flex items-center gap-1">
-            <span>💯</span>
-            <span>{lang === 'ar' ? 'خدمة موثوقة وآمنة' : 'Reliable & Secure Service'}</span>
-          </div>
+
+          {onToggleDataSaver && (
+            <button
+              type="button"
+              onClick={onToggleDataSaver}
+              className={`px-2 py-1 rounded-lg text-[9px] font-black shadow-md flex items-center gap-1 border transition-all cursor-pointer ${
+                dataSaverMode
+                  ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-amber-500/20'
+                  : 'bg-slate-900/90 text-slate-300 border-slate-700 hover:text-white'
+              }`}
+              title={lang === 'ar' ? 'تفعيل/إيقاف وضع توفير بيانات الهاتف' : 'Toggle Mobile Data Saver'}
+            >
+              <span>⚡</span>
+              <span>
+                {dataSaverMode
+                  ? (lang === 'ar' ? 'توفير البيانات مفعل (80%)' : 'Data Saver ON (80%)')
+                  : (lang === 'ar' ? 'توفير البيانات' : 'Data Saver')}
+              </span>
+            </button>
+          )}
         </div>
       )}
 
