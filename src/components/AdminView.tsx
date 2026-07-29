@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Driver, Trip, SystemStats, Location, Rider, PromoCode, Region } from '../types';
-import { DollarSign, ShieldAlert, Award, TrendingUp, Settings, Percent, CheckCircle, Star, Users, MapPin, Database, Sparkles, Search, Upload, AlertCircle, HelpCircle, Globe, Loader2, Calendar, Clock, BarChart2, Car, Map, Trash2, Plus } from 'lucide-react';
+import { Driver, Trip, SystemStats, Location, Rider, PromoCode, Region, Ad } from '../types';
+import { DollarSign, ShieldAlert, Award, TrendingUp, Settings, Percent, CheckCircle, Star, Users, MapPin, Database, Sparkles, Search, Upload, AlertCircle, HelpCircle, Globe, Loader2, Calendar, Clock, BarChart2, Car, Map, Trash2, Plus, Megaphone, Phone, Eye, EyeOff } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, AreaChart, Area } from 'recharts';
-import { fetchTripsHistoryFilteredPaginated, fetchTripsHistoryCount, generatePromoCode, fetchPromoCodes, fetchRegions, saveRegion, deleteRegionInDB } from '../supabaseService';
+import { fetchTripsHistoryFilteredPaginated, fetchTripsHistoryCount, generatePromoCode, fetchPromoCodes, fetchRegions, saveRegion, deleteRegionInDB, fetchAds, saveAd, deleteAd } from '../supabaseService';
 import { PRIVACY_POLICY, TERMS_OF_SERVICE, DATA_RETENTION_POLICY } from '../utils/legal';
 import { exportBackup, importBackup } from '../utils/backup';
 import { AVAILABLE_CITIES } from '../constants';
@@ -32,6 +32,7 @@ interface AdminViewProps {
   onUnblockRider: (riderId: string) => void;
   onDeleteRider: (riderId: string) => void;
   onAddBalanceToRider: (riderId: string, amount: number) => void;
+  onAddBalanceToDriver?: (driverId: string, amount: number) => void;
   onClearAllFakeData: () => void;
   lang: 'ar' | 'en';
   onLogout: () => void;
@@ -62,6 +63,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   onUnblockRider,
   onDeleteRider,
   onAddBalanceToRider,
+  onAddBalanceToDriver,
   onClearAllFakeData,
   lang,
   onLogout,
@@ -73,11 +75,12 @@ export const AdminView: React.FC<AdminViewProps> = ({
     }
   };
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'drivers' | 'riders' | 'history' | 'analytics' | 'legal' | 'regions'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'drivers' | 'riders' | 'history' | 'analytics' | 'legal' | 'regions' | 'ads'>('overview');
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   const [pricingForm, setPricingForm] = useState({
     distanceBuffer: stats.distanceBuffer ?? 1.25,
+    additionalKm: stats.additionalKm ?? 0.0,
     supportWhatsApp: stats.supportWhatsApp || '201015555555',
     carBaseFare: stats.carBaseFare ?? 20,
     carMinFare: stats.carMinFare ?? 2,
@@ -118,8 +121,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
   useEffect(() => {
     if (pricingDirty) return; // don't clobber the user's in-progress edits
     setPricingForm({
-      distanceBuffer: stats.distanceBuffer ?? 1.25,
-      supportWhatsApp: stats.supportWhatsApp || '201015555555',
+    distanceBuffer: stats.distanceBuffer ?? 1.25,
+    additionalKm: stats.additionalKm ?? 0.0,
+    supportWhatsApp: stats.supportWhatsApp || '201015555555',
       carBaseFare: stats.carBaseFare ?? 20,
       carMinFare: stats.carMinFare ?? 2,
       carPricePerKm0to20: stats.carPricePerKm ?? 8,
@@ -153,8 +157,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const handleSavePricing = () => {
     onSavePricingStats({
       ...stats,
-      distanceBuffer: pricingForm.distanceBuffer,
-      supportWhatsApp: pricingForm.supportWhatsApp,
+    distanceBuffer: pricingForm.distanceBuffer,
+    additionalKm: pricingForm.additionalKm,
+    supportWhatsApp: pricingForm.supportWhatsApp,
       carBaseFare: pricingForm.carBaseFare,
       carMinFare: pricingForm.carMinFare,
       carPricePerKm: pricingForm.carPricePerKm0to20,
@@ -232,7 +237,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const availableDrivers = drivers.filter(d => d.approvalStatus === 'APPROVED' && d.isOnline && d.status === 'AVAILABLE').length;
   const registeredRidersCount = riders.length;
   const [driverSearchQuery, setDriverSearchQuery] = useState('');
-  const [driverStatusFilter, setDriverStatusFilter] = useState<'all' | 'ACTIVE' | 'FROZEN' | 'REJECTED'>('all');
+  const [driverStatusFilter, setDriverStatusFilter] = useState<'all' | 'ACTIVE' | 'FROZEN' | 'REJECTED' | 'LOW_RATING'>('all');
   const [riderSearchQuery, setRiderSearchQuery] = useState('');
   const [riderStatusFilter, setRiderStatusFilter] = useState<'all' | 'ACTIVE' | 'FROZEN' | 'BLOCKED' | 'REJECTED'>('all');
   const [selectedRiderForDetails, setSelectedRiderForDetails] = useState<Rider | null>(null);
@@ -260,6 +265,64 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [newRegionNameEn, setNewRegionNameEn] = useState('');
   const [newRegionCountry, setNewRegionCountry] = useState('مصر');
   const [regionNameError, setRegionNameError] = useState('');
+
+  // Ads management state
+  const [ads, setAds] = useState<Ad[]>([]);
+  const [adFilterQuery, setAdFilterQuery] = useState('');
+  const [adFilterStatus, setAdFilterStatus] = useState<'all' | 'active' | 'inactive'>('all');
+  const [adFilterPlacement, setAdFilterPlacement] = useState<'all' | 'home' | 'waiting'>('all');
+  const [adSortBy, setAdSortBy] = useState<'newest' | 'views' | 'interactions' | 'revenue'>('newest');
+  const [selectedAdId, setSelectedAdId] = useState<string | 'all'>('all');
+  const [adForm, setAdForm] = useState({
+    storeName: '',
+    offerText: '',
+    imageUrl: '',
+    phoneNumber: '',
+    whatsapp: '',
+    placement: 'all' as Ad['placement'],
+    priority: 1,
+    isActive: true,
+    startDate: '',
+    endDate: '',
+    adFee: 0,
+    dailyImpressionLimit: 0,
+  });
+  const [editingAdId, setEditingAdId] = useState<string | null>(null);
+  const [adError, setAdError] = useState('');
+
+  const handleAdImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 400;
+        const scaleSize = MAX_WIDTH / img.width;
+        if (scaleSize < 1) {
+          canvas.width = MAX_WIDTH;
+          canvas.height = img.height * scaleSize;
+        } else {
+          canvas.width = img.width;
+          canvas.height = img.height;
+        }
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.65);
+          setAdForm((prev) => ({ ...prev, imageUrl: compressedDataUrl }));
+        }
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  useEffect(() => {
+    if (activeTab !== 'ads') return;
+    fetchAds().then(setAds);
+  }, [activeTab]);
 
   // Date formatting helper for completed trips
   const formatTripDate = (dateStr?: string) => {
@@ -610,6 +673,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
         {[
           { id: 'overview', labelAr: 'إعدادات الأسعار والعمولات', labelEn: 'Pricing & Commissions', icon: Settings },
           { id: 'regions', labelAr: 'إدارة المناطق', labelEn: 'Regions Management', icon: Map },
+          { id: 'ads', labelAr: 'إعلانات المحلات', labelEn: 'Store Ads', icon: Megaphone },
           { id: 'drivers', labelAr: 'إدارة السائقين', labelEn: 'Captains Ledger', icon: Users },
           { id: 'riders', labelAr: 'إدارة الركاب والحسابات', labelEn: 'Riders & Accounts', icon: Users },
           { id: 'history', labelAr: 'سجل الرحلات الكاملة', labelEn: 'Full Trip History', icon: Clock },
@@ -822,6 +886,23 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   />
                   <p className="text-[8px] text-slate-400">
                     {lang === 'ar' ? 'مثل 1.25 تعني زيادة 25% على المسافة لحساب الطريق الحقيقي' : 'e.g. 1.25 = 25% extra for real road distance'}
+                  </p>
+                </div>
+
+                {/* Additional Km (fixed addition to distance for pricing) */}
+                <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-3 space-y-2">
+                  <label className="text-[10px] font-bold text-slate-700">
+                    {lang === 'ar' ? 'إضافة كيلومترات إضافية للمسافة' : 'Additional KM (fixed addition to distance)'}
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={pricingForm.additionalKm}
+                    onChange={(e) => updatePricingField('additionalKm', Number(e.target.value))}
+                    className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-center font-bold text-slate-800"
+                  />
+                  <p className="text-[8px] text-slate-400">
+                    {lang === 'ar' ? 'مثل 1 تعني إضافة 1 كم إضافي على المسافة النهائية' : 'e.g. 1 = adds 1 km to final distance for pricing'}
                   </p>
                 </div>
 
@@ -1202,7 +1283,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
           <div className="flex items-center gap-2">
             <span className="text-lg">🎁</span>
             <h3 className="text-xs font-black text-slate-800">
-              {lang === 'ar' ? 'ال��كواد الترويجية' : 'Promo Codes'}
+              {lang === 'ar' ? 'الكواد الترويجية' : 'Promo Codes'}
             </h3>
           </div>
           
@@ -1263,28 +1344,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
         </div>
           </div>
         )}
-
-        {/* DANGER ZONE: CLEAR ALL FAKE DATA */}
-        <div className="bg-rose-50 border-2 border-rose-200 rounded-2xl p-4 space-y-3">
-          <div className="flex items-center gap-2">
-            <span className="text-lg">⚠️</span>
-            <h3 className="text-xs font-black text-rose-800">
-              {lang === 'ar' ? 'منطقة الخطر: مسح البيانات الوهمية بالكامل' : 'Danger Zone: Clear All Fake Data'}
-            </h3>
-          </div>
-          <p className="text-[9px] text-rose-600 leading-relaxed">
-            {lang === 'ar'
-              ? 'سيتم مسح جميع بيانات الركاب والسائقين الوهمية من السيرفر والجهاز نهائياً. لا يمكن استرجاعها بعد التنفيذ.'
-              : 'This will permanently delete ALL fake riders and drivers data from both server and device. This action cannot be undone.'}
-          </p>
-          <button
-            type="button"
-            onClick={onClearAllFakeData}
-            className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-black rounded-xl transition-colors cursor-pointer pointer-events-auto"
-          >
-            {lang === 'ar' ? '🗑️ مسح جميع البيانات الوهمية نهائياً' : '🗑️ Delete ALL Fake Data Permanently'}
-          </button>
-        </div>
 
         {/* TAB 2: CAPTAIN & LEDGER MANAGEMENT */}
         {activeTab === 'drivers' && (
@@ -1503,6 +1562,16 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       >
                         {lang === 'ar' ? 'مرفوض' : 'Rejected'}
                       </button>
+                      <button
+                        onClick={() => setDriverStatusFilter('LOW_RATING')}
+                        className={`px-2.5 py-0.5 rounded-full text-[9px] font-bold transition-all cursor-pointer ${
+                          driverStatusFilter === 'LOW_RATING'
+                            ? 'bg-amber-500 text-slate-950'
+                            : 'bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100'
+                        }`}
+                      >
+                        ⭐ {lang === 'ar' ? 'تقييم منخفض (<3.5)' : 'Low Rated (<3.5)'}
+                      </button>
                     </div>
                   </div>
 
@@ -1513,6 +1582,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                         if (driverStatusFilter === 'ACTIVE') return d.approvalStatus === 'APPROVED';
                         if (driverStatusFilter === 'FROZEN') return d.approvalStatus === 'FROZEN';
                         if (driverStatusFilter === 'REJECTED') return d.approvalStatus === 'REJECTED';
+                        if (driverStatusFilter === 'LOW_RATING') return d.rating < 3.5;
                         return true;
                       })
                       .filter((d) => {
@@ -1528,9 +1598,10 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       .map((drv) => {
                         const isFrozen = drv.approvalStatus === 'FROZEN';
                         const isRejected = drv.approvalStatus === 'REJECTED';
+                        const isLowRating = drv.rating < 3.5;
                         
                         return (
-                        <div key={drv.id} className={`border border-slate-100 p-3 rounded-xl space-y-2.5 ${isFrozen ? 'bg-red-50/20 border-red-100' : isRejected ? 'bg-slate-50 border-slate-200' : 'bg-white'}`}>
+                        <div key={drv.id} className={`border p-3 rounded-xl space-y-2.5 ${isFrozen ? 'bg-red-50/20 border-red-100' : isRejected ? 'bg-slate-50 border-slate-200' : isLowRating ? 'bg-amber-50/30 border-amber-200' : 'bg-white border-slate-100'}`}>
                           <div className="flex items-start justify-between">
                             <div>
                               <h5 className="text-xs font-black text-slate-800 flex items-center gap-1.5">
@@ -1549,7 +1620,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                               </p>
                             </div>
                             <div className="flex flex-col items-end gap-1">
-                              <div className="flex items-center gap-0.5 text-amber-500 text-[10px] font-bold">
+                              <div className={`flex items-center gap-0.5 text-[10px] font-black ${isLowRating ? 'text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded' : 'text-amber-500'}`}>
                                 <Star className="w-3 h-3 fill-amber-500 text-amber-500" />
                                 <span>{drv.rating}</span>
                               </div>
@@ -1569,8 +1640,29 @@ export const AdminView: React.FC<AdminViewProps> = ({
                             </div>
                           </div>
 
-                          {/* Ledger stats */}
-                          <div className="grid grid-cols-3 gap-2 bg-slate-50 p-2 rounded-lg text-center text-[10px]">
+                          {/* Rating Alert Banner if low rating */}
+                          {isLowRating && !isFrozen && (
+                            <div className="bg-rose-50 border border-rose-200 p-2 rounded-lg flex items-center justify-between gap-2 text-[9px] text-rose-800 font-bold">
+                              <span>⚠️ تقييم الكابتن منخفض (أقل من 3.5 نجوم). ينصح بحظر الحساب.</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onFreezeDriver(drv.id);
+                                  triggerToast(
+                                    lang === 'ar' ? 'تم حظر السائق' : 'Driver Blocked',
+                                    lang === 'ar' ? `تم حظر ${drv.name} بسبب انخفاض التقييم` : `Blocked ${drv.name} due to low rating`,
+                                    'warning'
+                                  );
+                                }}
+                                className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded text-[8.5px] font-black transition-colors shrink-0 pointer-events-auto cursor-pointer"
+                              >
+                                {lang === 'ar' ? '⛔ حظر تلقائي' : 'Auto Block'}
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Ledger stats & Ezz Wallet */}
+                          <div className="grid grid-cols-4 gap-1.5 bg-slate-50 p-2 rounded-lg text-center text-[9.5px]">
                             <div>
                               <p className="text-[8px] text-slate-400">{lang === 'ar' ? 'الرحلات' : 'Rides'}</p>
                               <p className="font-bold text-slate-700 mt-0.5">{drv.totalTrips}</p>
@@ -1582,6 +1674,46 @@ export const AdminView: React.FC<AdminViewProps> = ({
                             <div>
                               <p className="text-[8px] text-rose-500">{lang === 'ar' ? 'عمولة التطبيق' : 'Due Ezz'}</p>
                               <p className="font-bold text-rose-600 mt-0.5">{drv.totalCommissionPaid} ج.م</p>
+                            </div>
+                            <div className="bg-emerald-50 border border-emerald-100 rounded p-1">
+                              <p className="text-[7.5px] text-emerald-700 font-black">{lang === 'ar' ? 'محفظة كابتن عز' : 'Ezz Wallet'}</p>
+                              <p className="font-black text-emerald-800 mt-0.5">{drv.walletBalance ?? 0} ج.م</p>
+                            </div>
+                          </div>
+
+                          {/* Ezz Wallet Top-Up Button */}
+                          <div className="bg-emerald-50/50 border border-emerald-100 p-2 rounded-lg flex items-center justify-between text-[9px]">
+                            <span className="font-bold text-emerald-800">
+                              💳 {lang === 'ar' ? 'شحن رصيد محفظة الكابتن (خصم عمولة أوتوماتيكي):' : 'Recharge Ezz Wallet (Auto-Deduct):'}
+                            </span>
+                            <div className="flex gap-1">
+                              <button
+                                type="button"
+                                onClick={() => onAddBalanceToDriver && onAddBalanceToDriver(drv.id, 50)}
+                                className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-bold transition-all cursor-pointer pointer-events-auto"
+                              >
+                                +50 ج.م
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => onAddBalanceToDriver && onAddBalanceToDriver(drv.id, 100)}
+                                className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-bold transition-all cursor-pointer pointer-events-auto"
+                              >
+                                +100 ج.م
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const val = prompt(lang === 'ar' ? 'أدخل قيمة الشحن بالجنية:' : 'Enter top-up amount:');
+                                  const num = Number(val);
+                                  if (num > 0 && onAddBalanceToDriver) {
+                                    onAddBalanceToDriver(drv.id, num);
+                                  }
+                                }}
+                                className="px-2 py-1 bg-slate-800 hover:bg-slate-900 text-amber-400 rounded font-bold transition-all cursor-pointer pointer-events-auto"
+                              >
+                                {lang === 'ar' ? 'مبلغ آخر' : 'Custom'}
+                              </button>
                             </div>
                           </div>
 
@@ -2545,7 +2677,599 @@ export const AdminView: React.FC<AdminViewProps> = ({
           </div>
         )}
 
-        {/* TAB 5: LEGAL & COMPLIANCE */}
+        {/* TAB: STORE ADS MANAGEMENT */}
+        {activeTab === 'ads' && (() => {
+          const selectedAdObj = ads.find((a) => a.id === selectedAdId);
+          const displayedAds = ads.filter((ad) => {
+            if (selectedAdId !== 'all' && ad.id !== selectedAdId) return false;
+            if (adFilterQuery.trim()) {
+              const q = adFilterQuery.toLowerCase().trim();
+              const matchName = ad.storeName.toLowerCase().includes(q);
+              const matchOffer = ad.offerText.toLowerCase().includes(q);
+              const matchPhone = ad.phoneNumber.includes(q);
+              if (!matchName && !matchOffer && !matchPhone) return false;
+            }
+            if (adFilterStatus === 'active' && !ad.isActive) return false;
+            if (adFilterStatus === 'inactive' && ad.isActive) return false;
+            if (adFilterPlacement !== 'all' && ad.placement !== 'all' && ad.placement !== adFilterPlacement) return false;
+            return true;
+          }).sort((a, b) => {
+            if (adSortBy === 'views') return (b.impressions || 0) - (a.impressions || 0);
+            if (adSortBy === 'interactions') return ((b.clicks || 0) + (b.whatsappClicks || 0)) - ((a.clicks || 0) + (a.whatsappClicks || 0));
+            if (adSortBy === 'revenue') return (b.adFee || 0) - (a.adFee || 0);
+            return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+          });
+
+          return (
+            <div className="space-y-4">
+              {/* Total Ad Revenue & Comprehensive Analytics Header Card */}
+              <div className="bg-gradient-to-r from-teal-900 via-emerald-900 to-slate-900 text-white rounded-2xl p-4 shadow-md space-y-3">
+                <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-1.5 text-xs font-black text-emerald-400">
+                      <Megaphone className="w-4 h-4" />
+                      <span>{lang === 'ar' ? 'إحصائيات إعلانات المحلات التجارية' : 'Store Ads Analytics'}</span>
+                    </div>
+                    <p className="text-[10px] text-slate-300">
+                      {lang === 'ar'
+                        ? 'متابعة شاملة للرسوم المحصلة وعدد المشاهدات والاتصالات ونقرات الواتساب لكل إعلان'
+                        : 'Comprehensive tracking of revenues, impressions, calls, and WhatsApp clicks per ad'}
+                    </p>
+                  </div>
+                  <span className="text-[10px] font-bold text-emerald-300 bg-white/10 border border-white/10 px-2.5 py-1 rounded-full">
+                    {ads.filter(a => a.isActive).length} {lang === 'ar' ? 'إعلان نشط' : 'active ads'}
+                  </span>
+                </div>
+
+                {/* Grid of 4 Key Stats */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                  <div className="bg-white/10 backdrop-blur-md p-2.5 rounded-xl border border-white/10 text-right">
+                    <p className="text-[9px] text-emerald-300 font-bold">{lang === 'ar' ? '💰 إجمالي الأرباح:' : '💰 Total Revenue:'}</p>
+                    <p className="text-base font-black text-white mt-0.5">
+                      {ads.reduce((acc, a) => acc + (a.adFee || 0), 0).toLocaleString()} <span className="text-[10px] font-normal">{lang === 'ar' ? 'ج.م' : 'EGP'}</span>
+                    </p>
+                  </div>
+
+                  <div className="bg-white/10 backdrop-blur-md p-2.5 rounded-xl border border-white/10 text-right">
+                    <p className="text-[9px] text-blue-300 font-bold">{lang === 'ar' ? '👁️ إجمالي المشاهدات:' : '👁️ Total Views:'}</p>
+                    <p className="text-base font-black text-white mt-0.5">
+                      {ads.reduce((acc, a) => acc + (a.impressions || 0), 0).toLocaleString()} <span className="text-[10px] font-normal">{lang === 'ar' ? 'مرة' : 'times'}</span>
+                    </p>
+                  </div>
+
+                  <div className="bg-white/10 backdrop-blur-md p-2.5 rounded-xl border border-white/10 text-right">
+                    <p className="text-[9px] text-teal-300 font-bold">{lang === 'ar' ? '📞 الاتصالات الهاتفية:' : '📞 Phone Calls:'}</p>
+                    <p className="text-base font-black text-white mt-0.5">
+                      {ads.reduce((acc, a) => acc + (a.clicks || 0), 0).toLocaleString()} <span className="text-[10px] font-normal">{lang === 'ar' ? 'اتصال' : 'calls'}</span>
+                    </p>
+                  </div>
+
+                  <div className="bg-white/10 backdrop-blur-md p-2.5 rounded-xl border border-white/10 text-right">
+                    <p className="text-[9px] text-emerald-300 font-bold">{lang === 'ar' ? '💬 نقرات الواتساب:' : '💬 WhatsApp Clicks:'}</p>
+                    <p className="text-base font-black text-white mt-0.5">
+                      {ads.reduce((acc, a) => acc + (a.whatsappClicks || 0), 0).toLocaleString()} <span className="text-[10px] font-normal">{lang === 'ar' ? 'نقرة' : 'clicks'}</span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* SEARCH & FILTER BAR */}
+              <div className="bg-white border border-slate-200 rounded-2xl p-3 shadow-xs space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-black text-slate-800 flex items-center gap-1">
+                    🔍 {lang === 'ar' ? 'تصفية وإحصائيات حسب الإعلان:' : 'Filter & Analytics by Ad:'}
+                  </span>
+                  {(selectedAdId !== 'all' || adFilterQuery || adFilterStatus !== 'all' || adFilterPlacement !== 'all') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedAdId('all');
+                        setAdFilterQuery('');
+                        setAdFilterStatus('all');
+                        setAdFilterPlacement('all');
+                        setAdSortBy('newest');
+                      }}
+                      className="text-[9px] font-bold text-rose-600 hover:text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md cursor-pointer"
+                    >
+                      🔄 {lang === 'ar' ? 'إعادة ضبط الفلاتر' : 'Reset Filters'}
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                  {/* Select Specific Ad */}
+                  <div className="space-y-0.5">
+                    <label className="text-[8px] font-bold text-slate-500">{lang === 'ar' ? 'اختر الإعلان للتفاصيل:' : 'Select Ad:'}</label>
+                    <select
+                      value={selectedAdId}
+                      onChange={(e) => setSelectedAdId(e.target.value)}
+                      className="w-full text-[10px] bg-teal-50/60 border border-teal-200 text-teal-900 font-bold rounded-xl px-2.5 py-1.5 focus:outline-none focus:border-teal-500"
+                    >
+                      <option value="all">{lang === 'ar' ? '📊 كل الإعلانات (عرض شامل)' : '📊 All Ads'}</option>
+                      {ads.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.storeName} ({a.adFee || 0} ج.م - {a.impressions || 0} ظهور)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Search Query */}
+                  <div className="space-y-0.5">
+                    <label className="text-[8px] font-bold text-slate-500">{lang === 'ar' ? 'بحث بالاسم / الهاتف:' : 'Search:'}</label>
+                    <input
+                      type="text"
+                      placeholder={lang === 'ar' ? 'اسم المحل أو العرض...' : 'Store or offer...'}
+                      value={adFilterQuery}
+                      onChange={(e) => setAdFilterQuery(e.target.value)}
+                      className="w-full text-[10px] bg-slate-50 border border-slate-200 text-slate-700 rounded-xl px-2.5 py-1.5 focus:outline-none focus:border-teal-500"
+                    />
+                  </div>
+
+                  {/* Filter by Status */}
+                  <div className="space-y-0.5">
+                    <label className="text-[8px] font-bold text-slate-500">{lang === 'ar' ? 'الحالة:' : 'Status:'}</label>
+                    <select
+                      value={adFilterStatus}
+                      onChange={(e) => setAdFilterStatus(e.target.value as any)}
+                      className="w-full text-[10px] bg-slate-50 border border-slate-200 text-slate-700 rounded-xl px-2.5 py-1.5 focus:outline-none focus:border-teal-500"
+                    >
+                      <option value="all">{lang === 'ar' ? 'الكل (مفعل وغير مفعل)' : 'All Statuses'}</option>
+                      <option value="active">{lang === 'ar' ? 'المفعلة فقط' : 'Active Only'}</option>
+                      <option value="inactive">{lang === 'ar' ? 'المتوقفة فقط' : 'Inactive Only'}</option>
+                    </select>
+                  </div>
+
+                  {/* Sort By */}
+                  <div className="space-y-0.5">
+                    <label className="text-[8px] font-bold text-slate-500">{lang === 'ar' ? 'ترتيب حسب:' : 'Sort By:'}</label>
+                    <select
+                      value={adSortBy}
+                      onChange={(e) => setAdSortBy(e.target.value as any)}
+                      className="w-full text-[10px] bg-slate-50 border border-slate-200 text-slate-700 rounded-xl px-2.5 py-1.5 focus:outline-none focus:border-teal-500"
+                    >
+                      <option value="newest">{lang === 'ar' ? 'الأحدث أولاً' : 'Newest'}</option>
+                      <option value="views">{lang === 'ar' ? 'الأعلى مشاهدة 👁️' : 'Highest Views'}</option>
+                      <option value="interactions">{lang === 'ar' ? 'الأعلى تفاعلاً 📞💬' : 'Highest Interactions'}</option>
+                      <option value="revenue">{lang === 'ar' ? 'الأعلى إيراداً 💰' : 'Highest Revenue'}</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* SINGLE AD DETAILED ANALYTICS CARD (If specific ad selected) */}
+              {selectedAdObj && (() => {
+                const totalInteractions = (selectedAdObj.clicks || 0) + (selectedAdObj.whatsappClicks || 0);
+                const impressions = selectedAdObj.impressions || 0;
+                const ctr = impressions > 0 ? ((totalInteractions / impressions) * 100).toFixed(1) : '0.0';
+
+                return (
+                  <div className="bg-gradient-to-br from-slate-900 via-teal-950 to-slate-900 border-2 border-teal-500/30 text-white rounded-2xl p-4 shadow-xl space-y-3 animate-in fade-in duration-300">
+                    <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                      <div className="flex items-center gap-3">
+                        <img src={selectedAdObj.imageUrl} alt={selectedAdObj.storeName} className="w-12 h-12 rounded-xl object-cover border border-white/20 bg-white/10" />
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-sm font-black text-white">{selectedAdObj.storeName}</h3>
+                            <span className={`text-[8px] font-bold px-2 py-0.5 rounded-full ${selectedAdObj.isActive ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/30' : 'bg-slate-700 text-slate-400'}`}>
+                              {selectedAdObj.isActive ? (lang === 'ar' ? 'مفعّل' : 'Active') : (lang === 'ar' ? 'متوقف' : 'Off')}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-300 mt-0.5">{selectedAdObj.offerText}</p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedAdId('all')}
+                        className="text-[9px] font-bold text-teal-300 hover:text-white bg-white/10 px-2.5 py-1 rounded-lg border border-white/10 cursor-pointer"
+                      >
+                        ✖ {lang === 'ar' ? 'إغلاق التقرير' : 'Close Report'}
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                      <div className="bg-white/10 backdrop-blur-md p-2.5 rounded-xl border border-white/10 text-right">
+                        <p className="text-[8px] text-emerald-300 font-bold">{lang === 'ar' ? '💰 رسوم الإعلان:' : 'Ad Fee:'}</p>
+                        <p className="text-sm font-black text-white mt-0.5">{selectedAdObj.adFee || 0} ج.م</p>
+                      </div>
+
+                      <div className="bg-white/10 backdrop-blur-md p-2.5 rounded-xl border border-white/10 text-right">
+                        <p className="text-[8px] text-blue-300 font-bold">{lang === 'ar' ? '👁️ المشاهدات (الظهور):' : 'Impressions:'}</p>
+                        <p className="text-sm font-black text-white mt-0.5">{impressions.toLocaleString()}</p>
+                      </div>
+
+                      <div className="bg-white/10 backdrop-blur-md p-2.5 rounded-xl border border-white/10 text-right">
+                        <p className="text-[8px] text-teal-300 font-bold">{lang === 'ar' ? '📞 اتصالات الهاتف:' : 'Calls:'}</p>
+                        <p className="text-sm font-black text-white mt-0.5">{selectedAdObj.clicks || 0}</p>
+                      </div>
+
+                      <div className="bg-white/10 backdrop-blur-md p-2.5 rounded-xl border border-white/10 text-right">
+                        <p className="text-[8px] text-emerald-300 font-bold">{lang === 'ar' ? '💬 نقرات الواتساب:' : 'WhatsApp:'}</p>
+                        <p className="text-sm font-black text-white mt-0.5">{selectedAdObj.whatsappClicks || 0}</p>
+                      </div>
+
+                      <div className="bg-white/10 backdrop-blur-md p-2.5 rounded-xl border border-white/10 text-right">
+                        <p className="text-[8px] text-amber-300 font-bold">{lang === 'ar' ? '⚡ إجمالي التفاعل:' : 'Total Contact:'}</p>
+                        <p className="text-sm font-black text-white mt-0.5">{totalInteractions}</p>
+                      </div>
+
+                      <div className="bg-white/10 backdrop-blur-md p-2.5 rounded-xl border border-white/10 text-right">
+                        <p className="text-[8px] text-purple-300 font-bold">{lang === 'ar' ? '🎯 نسبة التحويل (CTR):' : 'CTR Rate:'}</p>
+                        <p className="text-sm font-black text-purple-200 mt-0.5">{ctr}%</p>
+                      </div>
+                    </div>
+
+                    {/* Progress conversion bar */}
+                    <div className="space-y-1 pt-1">
+                      <div className="flex items-center justify-between text-[9px] text-slate-300 font-bold">
+                        <span>{lang === 'ar' ? 'شريط تحويل المشاهدات إلى تفاعلات اتصالات:' : 'Views to Contact Conversion Rate:'}</span>
+                        <span className="text-teal-300 font-black">{ctr}% ({totalInteractions} / {impressions})</span>
+                      </div>
+                      <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
+                        <div
+                          className="bg-gradient-to-r from-teal-400 to-emerald-400 h-full transition-all duration-500 rounded-full"
+                          style={{ width: `${Math.min(100, Math.max(2, Number(ctr)))}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3 shadow-sm">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                    <Megaphone className="w-4 h-4 text-teal-600" />
+                    <span>{lang === 'ar' ? 'إضافة / تعديل إعلان محل محلي' : 'Add / Edit Store Banner'}</span>
+                  </div>
+                  <span className="text-[10px] font-bold text-teal-600 bg-teal-50 border border-teal-100 px-2 py-0.5 rounded-full">
+                    {ads.length} {lang === 'ar' ? 'إعلان' : 'ads'}
+                  </span>
+                </div>
+
+                {adError && (
+                  <div className="bg-rose-50 border border-rose-200 text-rose-600 text-[10px] rounded-xl p-2.5">{adError}</div>
+                )}
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="col-span-2 space-y-1">
+                    <label className="text-[9px] font-bold text-slate-600">{lang === 'ar' ? 'اسم المحل / الخدمة *' : 'Store Name *'}</label>
+                    <input
+                      type="text"
+                      placeholder={lang === 'ar' ? 'مثال: مطعم كابتن عز للوجبات' : 'e.g. Ezz Fast Food'}
+                      value={adForm.storeName}
+                      onChange={(e) => setAdForm({ ...adForm, storeName: e.target.value })}
+                      className="w-full text-[10px] bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:outline-none focus:border-teal-500"
+                    />
+                  </div>
+
+                  <div className="col-span-2 space-y-1">
+                    <label className="text-[9px] font-bold text-slate-600">{lang === 'ar' ? 'نص العرض والتفاصيل *' : 'Offer Details *'}</label>
+                    <input
+                      type="text"
+                      placeholder={lang === 'ar' ? 'مثال: خصم 20% على جميع الوجبات وعروض التوصيل' : 'e.g. 20% off all meals'}
+                      value={adForm.offerText}
+                      onChange={(e) => setAdForm({ ...adForm, offerText: e.target.value })}
+                      className="w-full text-[10px] bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:outline-none focus:border-teal-500"
+                    />
+                  </div>
+
+                  {/* Image URL & Local Upload with compression */}
+                  <div className="col-span-2 space-y-1 bg-slate-50 border border-slate-200/80 p-2.5 rounded-xl">
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[9px] font-bold text-slate-700">{lang === 'ar' ? 'صورة الإعلان (رابط أو رفع ملف مضغوط) *' : 'Ad Image (URL or compressed upload) *'}</label>
+                      <span className="text-[8px] text-teal-600 font-bold bg-teal-50 px-1.5 py-0.5 rounded">
+                        {lang === 'ar' ? '⚡ ضغط تلقائي موفر للداتا' : '⚡ Auto Compressed'}
+                      </span>
+                    </div>
+                    <div className="flex gap-2 items-center">
+                      <input
+                        type="text"
+                        placeholder={lang === 'ar' ? 'رابط الصورة https://...' : 'Image URL https://...'}
+                        value={adForm.imageUrl}
+                        onChange={(e) => setAdForm({ ...adForm, imageUrl: e.target.value })}
+                        className="flex-1 text-[10px] bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700 focus:outline-none focus:border-teal-500"
+                      />
+                      <label className="shrink-0 bg-teal-600 hover:bg-teal-700 text-white text-[9px] font-bold px-2.5 py-1.5 rounded-lg cursor-pointer transition-colors shadow-xs">
+                        📁 {lang === 'ar' ? 'رفع صورة' : 'Upload'}
+                        <input type="file" accept="image/*" onChange={handleAdImageFileUpload} className="hidden" />
+                      </label>
+                    </div>
+                    {adForm.imageUrl && (
+                      <div className="flex items-center gap-2 mt-2 pt-1 border-t border-slate-200">
+                        <img src={adForm.imageUrl} alt="preview" className="w-10 h-10 object-cover rounded-lg bg-white border border-slate-200" />
+                        <span className="text-[8px] text-slate-500">{lang === 'ar' ? 'معاينة الصورة المضغوطة' : 'Compressed image preview'}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-600">{lang === 'ar' ? 'رقم الهاتف للاتصال *' : 'Phone Number *'}</label>
+                    <input
+                      type="tel"
+                      placeholder="01015555555"
+                      value={adForm.phoneNumber}
+                      onChange={(e) => setAdForm({ ...adForm, phoneNumber: e.target.value })}
+                      className="w-full text-[10px] bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:outline-none focus:border-teal-500"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-600">{lang === 'ar' ? 'رقم الواتساب (اختياري)' : 'WhatsApp (optional)'}</label>
+                    <input
+                      type="tel"
+                      placeholder="201015555555"
+                      value={adForm.whatsapp}
+                      onChange={(e) => setAdForm({ ...adForm, whatsapp: e.target.value })}
+                      className="w-full text-[10px] bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:outline-none focus:border-teal-500"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-700">{lang === 'ar' ? 'رسوم الإعلان (جنيه) *' : 'Ad Fee (EGP) *'}</label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="500"
+                      value={adForm.adFee || ''}
+                      onChange={(e) => setAdForm({ ...adForm, adFee: Number(e.target.value) || 0 })}
+                      className="w-full text-[10px] bg-emerald-50/50 border border-emerald-200 rounded-lg px-3 py-2 text-emerald-900 font-bold focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-600">{lang === 'ar' ? 'مكان الظهور' : 'Placement'}</label>
+                    <select
+                      value={adForm.placement}
+                      onChange={(e) => setAdForm({ ...adForm, placement: e.target.value as Ad['placement'] })}
+                      className="w-full text-[10px] bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:outline-none focus:border-teal-500"
+                    >
+                      <option value="all">{lang === 'ar' ? 'كل الصفحات' : 'All placements'}</option>
+                      <option value="home">{lang === 'ar' ? 'الصفحة الرئيسية' : 'Home screen'}</option>
+                      <option value="waiting">{lang === 'ar' ? 'صفحة انتظار السائق' : 'Waiting screen'}</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-600">{lang === 'ar' ? 'أولوية الظهور (1 - 5)' : 'Priority (1 - 5)'}</label>
+                    <select
+                      value={adForm.priority}
+                      onChange={(e) => setAdForm({ ...adForm, priority: Number(e.target.value) || 1 })}
+                      className="w-full text-[10px] bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:outline-none focus:border-teal-500"
+                    >
+                      <option value={1}>{lang === 'ar' ? '1 - أولوية عادية' : '1 - Standard'}</option>
+                      <option value={2}>{lang === 'ar' ? '2 - أولوية متوسطة' : '2 - Medium'}</option>
+                      <option value={3}>{lang === 'ar' ? '3 - أولوية مرتفعة' : '3 - High'}</option>
+                      <option value={5}>{lang === 'ar' ? '5 - أولوية قصوى (الأكثر ظهوراً)' : '5 - Maximum Priority'}</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-600">{lang === 'ar' ? 'تاريخ بداية الإعلان' : 'Start Date'}</label>
+                    <input
+                      type="date"
+                      value={adForm.startDate}
+                      onChange={(e) => setAdForm({ ...adForm, startDate: e.target.value })}
+                      className="w-full text-[10px] bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:outline-none focus:border-teal-500"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-600">{lang === 'ar' ? 'تاريخ نهاية الإعلان' : 'End Date'}</label>
+                    <input
+                      type="date"
+                      value={adForm.endDate}
+                      onChange={(e) => setAdForm({ ...adForm, endDate: e.target.value })}
+                      className="w-full text-[10px] bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:outline-none focus:border-teal-500"
+                    />
+                  </div>
+
+                  <label className="col-span-2 flex items-center gap-2 text-[10px] text-slate-600 cursor-pointer pt-1">
+                    <input
+                      type="checkbox"
+                      checked={adForm.isActive}
+                      onChange={(e) => setAdForm({ ...adForm, isActive: e.target.checked })}
+                      className="w-4 h-4 accent-teal-600 cursor-pointer"
+                    />
+                    <span className="font-bold">{lang === 'ar' ? 'الإعلان مفعّل ومتاح للظهور للعملاء' : 'Ad is active and visible to riders'}</span>
+                  </label>
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!adForm.storeName.trim() || !adForm.offerText.trim() || !adForm.imageUrl.trim() || !adForm.phoneNumber.trim()) {
+                        setAdError(lang === 'ar' ? 'يرجى ملء جميع الحقول المطلوبة (اسم المحل، نص العرض، الصورة، رقم الهاتف)' : 'Please fill all required fields');
+                        return;
+                      }
+                      setAdError('');
+                      const saved = await saveAd({
+                        id: editingAdId || undefined,
+                        storeName: adForm.storeName.trim(),
+                        offerText: adForm.offerText.trim(),
+                        imageUrl: adForm.imageUrl.trim(),
+                        phoneNumber: adForm.phoneNumber.trim(),
+                        whatsapp: adForm.whatsapp.trim() || undefined,
+                        placement: adForm.placement,
+                        priority: adForm.priority,
+                        isActive: adForm.isActive,
+                        startDate: adForm.startDate || undefined,
+                        endDate: adForm.endDate || undefined,
+                        adFee: adForm.adFee || 0,
+                        dailyImpressionLimit: adForm.dailyImpressionLimit || 0,
+                      });
+                      if (saved) {
+                        setAdForm({
+                          storeName: '',
+                          offerText: '',
+                          imageUrl: '',
+                          phoneNumber: '',
+                          whatsapp: '',
+                          placement: 'all',
+                          priority: 1,
+                          isActive: true,
+                          startDate: '',
+                          endDate: '',
+                          adFee: 0,
+                          dailyImpressionLimit: 0,
+                        });
+                        setEditingAdId(null);
+                        setAds(await fetchAds());
+                      } else {
+                        setAdError(lang === 'ar' ? 'فشل حفظ الإعلان' : 'Failed to save ad');
+                      }
+                    }}
+                    className="flex-1 py-2.5 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-bold text-xs rounded-xl transition-all cursor-pointer shadow-sm"
+                  >
+                    {editingAdId ? (lang === 'ar' ? 'حفظ التعديلات' : 'Save changes') : (lang === 'ar' ? 'إضافة الإعلان وحساب أرباحه' : 'Add Ad & Register Revenue')}
+                  </button>
+                  {editingAdId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingAdId(null);
+                        setAdForm({
+                          storeName: '',
+                          offerText: '',
+                          imageUrl: '',
+                          phoneNumber: '',
+                          whatsapp: '',
+                          placement: 'all',
+                          priority: 1,
+                          isActive: true,
+                          startDate: '',
+                          endDate: '',
+                          adFee: 0,
+                          dailyImpressionLimit: 0,
+                        });
+                        setAdError('');
+                      }}
+                      className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold text-xs rounded-xl transition-all cursor-pointer"
+                    >
+                      {lang === 'ar' ? 'إلغاء' : 'Cancel'}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* LIST OF FILTERED ADS */}
+              {displayedAds.length === 0 ? (
+                <div className="text-center p-8 bg-white border border-slate-200 rounded-2xl shadow-sm">
+                  <Megaphone className="w-10 h-10 text-slate-300 mx-auto" />
+                  <p className="text-xs font-bold text-slate-500 mt-2">
+                    {lang === 'ar' ? 'لا توجد إعلانات مطابقة للفلتر المحدد' : 'No ads matching selected filters'}
+                  </p>
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    {lang === 'ar' ? 'جرّب تغيير معايير البحث أو إضافة إعلان جديد' : 'Try changing search criteria or add a new ad'}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {displayedAds.map((ad) => {
+                    const isSelected = selectedAdId === ad.id;
+
+                    return (
+                      <div
+                        key={ad.id}
+                        className={`bg-white border rounded-2xl p-3 shadow-sm transition-all ${
+                          isSelected ? 'border-2 border-teal-500 ring-2 ring-teal-100' : 'border-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <img src={ad.imageUrl} alt={ad.storeName} className="w-14 h-14 rounded-xl object-cover bg-slate-100 shrink-0 border border-slate-100 shadow-2xs" />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5 justify-end">
+                              <h4 className="text-xs font-black text-slate-900 truncate">{ad.storeName}</h4>
+                              <span className={`text-[7px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${ad.isActive ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-slate-100 text-slate-400'}`}>
+                                {ad.isActive ? (lang === 'ar' ? 'مفعّل' : 'Active') : (lang === 'ar' ? 'متوقف' : 'Off')}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-slate-500 truncate text-right mt-0.5">{ad.offerText}</p>
+                            <div className="flex items-center gap-2 justify-end mt-1.5 text-[8px] text-slate-500 flex-wrap">
+                              {ad.adFee ? (
+                                <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded font-black">
+                                  💰 {ad.adFee} {lang === 'ar' ? 'ج.م رسوم' : 'EGP Fee'}
+                                </span>
+                              ) : null}
+                              <span className="bg-slate-100 px-1.5 py-0.5 rounded font-bold text-slate-600">
+                                {ad.placement === 'all' ? (lang === 'ar' ? 'كل الأماكن' : 'All') : ad.placement === 'home' ? (lang === 'ar' ? 'الرئيسية' : 'Home') : (lang === 'ar' ? 'الانتظار' : 'Wait')}
+                              </span>
+                              <span className="bg-blue-50 text-blue-700 border border-blue-100 px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5" title="عدد مرات الظهور للعملاء">
+                                👁️ {ad.impressions || 0} {lang === 'ar' ? 'ظهور' : 'views'}
+                              </span>
+                              <span className="bg-teal-50 text-teal-700 border border-teal-100 px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5" title="عدد الاتصالات الهاتفية">
+                                📞 {ad.clicks || 0} {lang === 'ar' ? 'اتصال' : 'calls'}
+                              </span>
+                              <span className="bg-emerald-50 text-emerald-700 border border-emerald-100 px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5" title="عدد نقرات الواتساب">
+                                💬 {ad.whatsappClicks || 0} {lang === 'ar' ? 'واتساب' : 'WhatsApp'}
+                              </span>
+                              <span>{lang === 'ar' ? `أولوية: ${ad.priority}` : `P: ${ad.priority}`}</span>
+                              {ad.startDate || ad.endDate ? (
+                                <span className="text-slate-400 font-medium">
+                                  📅 {ad.startDate || '...'} ⬅ {ad.endDate || '...'}
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                          <div className="flex flex-col gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedAdId(isSelected ? 'all' : ad.id)}
+                              className={`text-[9px] font-bold px-2.5 py-1.5 rounded-lg transition-all cursor-pointer ${
+                                isSelected ? 'bg-teal-600 text-white' : 'bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200'
+                              }`}
+                            >
+                              📊 {lang === 'ar' ? 'التقرير' : 'Report'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingAdId(ad.id);
+                                setAdForm({
+                                  storeName: ad.storeName,
+                                  offerText: ad.offerText,
+                                  imageUrl: ad.imageUrl,
+                                  phoneNumber: ad.phoneNumber,
+                                  whatsapp: ad.whatsapp || '',
+                                  placement: ad.placement,
+                                  priority: ad.priority,
+                                  isActive: ad.isActive,
+                                  startDate: ad.startDate || '',
+                                  endDate: ad.endDate || '',
+                                  adFee: ad.adFee || 0,
+                                  dailyImpressionLimit: ad.dailyImpressionLimit || 0,
+                                });
+                                setAdError('');
+                              }}
+                              className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[9px] font-bold rounded-lg transition-all cursor-pointer"
+                            >
+                              ✏️ {lang === 'ar' ? 'تعديل' : 'Edit'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                if (!confirm(lang === 'ar' ? 'حذف هذا الإعلان؟' : 'Delete this ad?')) return;
+                                if (await deleteAd(ad.id)) {
+                                  if (selectedAdId === ad.id) setSelectedAdId('all');
+                                  setAds(await fetchAds());
+                                }
+                              }}
+                              className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 text-[9px] font-bold rounded-lg transition-all cursor-pointer"
+                            >
+                              🗑️ {lang === 'ar' ? 'حذف' : 'Delete'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {activeTab === 'legal' && (
           <div className="space-y-4 animate-fade-in text-right">
             {/* Privacy Policy */}
