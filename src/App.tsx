@@ -1971,7 +1971,7 @@ export default function App() {
       const driverLng = drv?.lng ?? (drv ? getCoordsFromXY(drv.currentX, drv.currentY).lng : undefined);
 
       if (driverLat !== undefined && driverLng !== undefined) {
-        const route = await getNavigationRoute(driverLat, driverLng, activeTrip.pickup, activeTrip.dropoff);
+        const route = await getNavigationRoute(driverLat, driverLng, acceptedTrip.pickup, acceptedTrip.dropoff);
         if (route) {
           const routeUpdated: Trip = {
             ...acceptedTrip,
@@ -1992,8 +1992,8 @@ export default function App() {
       playNotificationSound('trip_accepted');
       speakText(
         lang === 'ar'
-          ? `تم قبول الرحلة بنجاح! العميل ${activeTrip.riderName || ''} بانتظارك.`
-          : `Ride accepted successfully! Client ${activeTrip.riderName || ''} is waiting for you.`,
+          ? `تم قبول الرحلة بنجاح! العميل ${acceptedTrip.riderName || ''} بانتظارك.`
+          : `Ride accepted successfully! Client ${acceptedTrip.riderName || ''} is waiting for you.`,
         lang === 'ar' ? 'ar-EG' : 'en-US'
       );
       sendNativeNotification(
