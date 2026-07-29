@@ -1999,8 +1999,8 @@ export default function App() {
       sendNativeNotification(
         lang === 'ar' ? '✅ تم قبول الرحلة!' : '✅ Ride Accepted!',
         lang === 'ar'
-          ? `أنت الآن في الطريق إلى العميل من ${activeTrip.pickup.nameAr} إلى ${activeTrip.dropoff.nameAr}.`
-          : `You are now heading to the client from ${activeTrip.pickup.nameEn} to ${activeTrip.dropoff.nameEn}.`,
+          ? `أنت الآن في الطريق إلى العميل من ${acceptedTrip.pickup.nameAr} إلى ${acceptedTrip.dropoff.nameAr}.`
+          : `You are now heading to the client from ${acceptedTrip.pickup.nameEn} to ${acceptedTrip.dropoff.nameEn}.`,
         '🚗'
       );
       startTitleFlash(lang === 'ar' ? '🚗 تم قبول الرحلة!' : '🚗 Ride Accepted!');
