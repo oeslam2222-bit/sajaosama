@@ -826,7 +826,7 @@ export const fetchPendingTrips = async (): Promise<Trip[]> => {
 };
 
 // Save Active Trip
-export const saveActiveTrip = async (trip: Trip | null): Promise<boolean> => {
+export const saveActiveTrip = async (trip: Trip | null, isAccepting: boolean = false): Promise<boolean> => {
   try {
     if (!trip) {
       const { error } = await supabase.from('ezz_active_trip').delete().neq('id', '00000000-0000-0000-0000-000000000000');
@@ -835,30 +835,26 @@ export const saveActiveTrip = async (trip: Trip | null): Promise<boolean> => {
       return true;
     }
 
-    console.log('[saveActiveTrip] Saving trip to DB:', trip.id, 'status:', trip.status, 'offeredDriverIds:', trip.offeredDriverIds);
+    console.log('[saveActiveTrip] Saving trip to DB:', trip.id, 'status:', trip.status, 'offeredDriverIds:', trip.offeredDriverIds, 'isAccepting:', isAccepting);
 
     // ── Race-condition guard for ACCEPTED ──────────────────────────────
     // Only one driver may win the accepting race.  We issue a conditional
     // UPDATE that succeeds only when the trip is still SEARCHING.
     // If another driver already accepted *and* updated first, this returns
     // false so the losing driver can revert the optimistic UI.
-    if (trip.status === 'ACCEPTED') {
-      // Map the trip to DB format for the update payload
+    if (isAccepting) {
       const payload = mapTripToDB(trip);
       const { data, error } = await supabase
         .from('ezz_active_trip')
         .update(payload)
         .eq('id', trip.id)
-        .eq('status', 'SEARCHING')   // 👈  only SEARCHING trips can be accepted
+        .eq('status', 'SEARCHING')
         .select('id')
         .maybeSingle();
 
       if (error) throw error;
 
       if (!data) {
-        // No row matched the id + status='SEARCHING' condition, which means
-        // either the trip was already accepted by another driver or it was
-        // cancelled / deleted.
         console.warn('[saveActiveTrip] Race lost — trip no longer SEARCHING (already accepted by another driver)');
         return false;
       }
@@ -867,7 +863,7 @@ export const saveActiveTrip = async (trip: Trip | null): Promise<boolean> => {
       return true;
     }
 
-    // ── All other statuses (including SEARCHING updates) use upsert ────
+    // ── All other statuses (including SEARCHING updates and ACCEPTED chat updates) use upsert ──
     const { error: insertError } = await supabase
       .from('ezz_active_trip')
       .upsert(mapTripToDB(trip), { onConflict: 'id' });
