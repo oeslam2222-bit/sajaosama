@@ -1,5 +1,5 @@
 import { supabase } from './supabaseClient';
-import { Driver, Rider, Location, Trip, SystemStats, Admin, RiderPreferences, AuditLogEntry, PromoCode, Region } from './types';
+import { Driver, Rider, Location, Trip, SystemStats, Admin, RiderPreferences, AuditLogEntry, PromoCode, Region, Ad } from './types';
 import { PAGINATION_PAGE_SIZE } from './constants';
 import { verifyPassword, isSecureHash, hashPassword, generateUUID } from './utils/security';
 
@@ -310,6 +310,35 @@ CREATE TABLE IF NOT EXISTS ezz_audit_logs (
 );
 
 -- ============================================================
+-- 10. جدول الإعلانات للمحلات المحلية
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ads (
+  id TEXT PRIMARY KEY,
+  store_name TEXT NOT NULL,
+  offer_text TEXT NOT NULL,
+  image_url TEXT NOT NULL,
+  phone_number TEXT NOT NULL,
+  whatsapp TEXT,
+  placement TEXT DEFAULT 'all',
+  priority INTEGER DEFAULT 1,
+  is_active BOOLEAN DEFAULT true,
+  start_date TEXT,
+  end_date TEXT,
+  clicks INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT NOW()::TEXT
+);
+
+ALTER TABLE IF EXISTS ads ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow public read ads" ON ads;
+CREATE POLICY "Allow public read ads" ON ads FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Allow public write ads" ON ads;
+CREATE POLICY "Allow public write ads" ON ads FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "Allow public update ads" ON ads;
+CREATE POLICY "Allow public update ads" ON ads FOR UPDATE USING (true);
+DROP POLICY IF EXISTS "Allow public delete ads" ON ads;
+CREATE POLICY "Allow public delete ads" ON ads FOR DELETE USING (true);
+
+-- ============================================================
 -- Indexes للأداء المثالي
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_drivers_status ON ezz_drivers(status, approval_status, is_online);
@@ -591,8 +620,10 @@ export const mapTripFromDB = (row: any): Trip => ({
   chatMessages: row.chat_messages || [],
   riderRatingToDriver: row.rider_rating_to_driver || undefined,
   riderFeedbackTags: row.rider_feedback_tags || [],
+  riderFeedbackComment: row.rider_feedback_comment || undefined,
   driverRatingToRider: row.driver_rating_to_rider || undefined,
   driverFeedbackTags: row.driver_feedback_tags || [],
+  driverFeedbackComment: row.driver_feedback_comment || undefined,
   routeGeometry: row.route_geometry || undefined,
   offeredDriverIds: row.offered_driver_ids || undefined,
   currentOfferedDriverId: row.current_offered_driver_id || undefined,
@@ -623,8 +654,10 @@ export const mapTripToDB = (trip: Trip) => ({
   chat_messages: trip.chatMessages || [],
   rider_rating_to_driver: trip.riderRatingToDriver || null,
   rider_feedback_tags: trip.riderFeedbackTags || [],
+  rider_feedback_comment: trip.riderFeedbackComment || null,
   driver_rating_to_rider: trip.driverRatingToRider || null,
   driver_feedback_tags: trip.driverFeedbackTags || [],
+  driver_feedback_comment: trip.driverFeedbackComment || null,
   route_geometry: trip.routeGeometry || null,
   offered_driver_ids: trip.offeredDriverIds || null,
   current_offered_driver_id: trip.currentOfferedDriverId || null,
@@ -722,9 +755,21 @@ export const deleteRiderInDB = async (riderId: string): Promise<boolean> => {
 };
 
 // Fetch Active Trip
-export const fetchActiveTrip = async (): Promise<Trip | null | 'NO_TABLE'> => {
+export const fetchActiveTrip = async (userId?: string, userRole?: 'rider' | 'driver' | 'admin'): Promise<Trip | null | 'NO_TABLE'> => {
   try {
-    const { data, error } = await supabase.from('ezz_active_trip').select('*').order('created_at', { ascending: false }).limit(1);
+    let query = supabase.from('ezz_active_trip').select('*').order('created_at', { ascending: false });
+
+    if (userId && userRole === 'rider') {
+      query = query.eq('rider_id', userId);
+    } else if (userId && userRole === 'driver') {
+      // Fetch trips where this driver is assigned, current offered, OR in the offered list.
+      // PostgREST .or() can't check JSONB containment, so we fetch by driver_id/current_offered
+      // and also fetch recent SEARCHING trips to check offeredDriverIds client-side.
+      query = query.or(`driver_id.eq.${userId},current_offered_driver_id.eq.${userId},status.eq.SEARCHING`);
+    }
+    // admin gets all
+
+    const { data, error } = await query.limit(1);
     if (error) {
       if (error.code === 'PGRST116') {
         console.log('[fetchActiveTrip] No active trip in DB (empty table)');
@@ -736,11 +781,47 @@ export const fetchActiveTrip = async (): Promise<Trip | null | 'NO_TABLE'> => {
       console.log('[fetchActiveTrip] No active trip in DB (empty result)');
       return null;
     }
-    console.log('[fetchActiveTrip] Found active trip:', data[0].id, 'status:', data[0].status, 'offeredDriverIds:', data[0].offered_driver_ids);
+
+    // For drivers, filter SEARCHING trips to only those where this driver is in offeredDriverIds.
+    // The .or() query fetches all SEARCHING trips, so we narrow down client-side.
+    if (userId && userRole === 'driver') {
+      const relevant = data.find((row: any) => {
+        const trip = mapTripFromDB(row);
+        if (trip.driverId === userId) return true;
+        if (trip.currentOfferedDriverId === userId) return true;
+        if (trip.status === 'SEARCHING' && trip.offeredDriverIds?.includes(userId)) return true;
+        return false;
+      });
+      if (relevant) {
+        console.log('[fetchActiveTrip] Found active trip:', relevant.id, 'status:', relevant.status, 'for driver:', userId);
+        return mapTripFromDB(relevant);
+      }
+      console.log('[fetchActiveTrip] No relevant trip for driver:', userId);
+      return null;
+    }
+
+    console.log('[fetchActiveTrip] Found active trip:', data[0].id, 'status:', data[0].status, 'for role:', userRole);
     return mapTripFromDB(data[0]);
   } catch (err: any) {
     console.warn('Could not fetch active trip from Supabase:', err.message);
     return 'NO_TABLE';
+  }
+};
+
+// Fetch all pending SEARCHING trips for available requests list
+export const fetchPendingTrips = async (): Promise<Trip[]> => {
+  try {
+    const { data, error } = await supabase
+      .from('ezz_active_trip')
+      .select('*')
+      .eq('status', 'SEARCHING')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    if (!data) return [];
+    return data.map(mapTripFromDB);
+  } catch (err: any) {
+    console.warn('Could not fetch pending trips from Supabase:', err.message);
+    return [];
   }
 };
 
@@ -755,6 +836,38 @@ export const saveActiveTrip = async (trip: Trip | null): Promise<boolean> => {
     }
 
     console.log('[saveActiveTrip] Saving trip to DB:', trip.id, 'status:', trip.status, 'offeredDriverIds:', trip.offeredDriverIds);
+
+    // ── Race-condition guard for ACCEPTED ──────────────────────────────
+    // Only one driver may win the accepting race.  We issue a conditional
+    // UPDATE that succeeds only when the trip is still SEARCHING.
+    // If another driver already accepted *and* updated first, this returns
+    // false so the losing driver can revert the optimistic UI.
+    if (trip.status === 'ACCEPTED') {
+      // Map the trip to DB format for the update payload
+      const payload = mapTripToDB(trip);
+      const { data, error } = await supabase
+        .from('ezz_active_trip')
+        .update(payload)
+        .eq('id', trip.id)
+        .eq('status', 'SEARCHING')   // 👈  only SEARCHING trips can be accepted
+        .select('id')
+        .maybeSingle();
+
+      if (error) throw error;
+
+      if (!data) {
+        // No row matched the id + status='SEARCHING' condition, which means
+        // either the trip was already accepted by another driver or it was
+        // cancelled / deleted.
+        console.warn('[saveActiveTrip] Race lost — trip no longer SEARCHING (already accepted by another driver)');
+        return false;
+      }
+
+      console.log('[saveActiveTrip] ACCEPTED saved successfully (race won)');
+      return true;
+    }
+
+    // ── All other statuses (including SEARCHING updates) use upsert ────
     const { error: insertError } = await supabase
       .from('ezz_active_trip')
       .upsert(mapTripToDB(trip), { onConflict: 'id' });
@@ -770,7 +883,9 @@ export const saveActiveTrip = async (trip: Trip | null): Promise<boolean> => {
 
 // Subscribe to active trip changes in realtime (used by the driver app to receive new ride requests)
 export const subscribeToActiveTrips = (
-  onTrip: (trip: Trip | null) => void
+  onTrip: (trip: Trip | null) => void,
+  userId?: string,
+  userRole?: 'rider' | 'driver' | 'admin'
 ): { unsubscribe: () => void } => {
   const channel = supabase
     .channel('ezz_active_trip_changes')
@@ -783,7 +898,17 @@ export const subscribeToActiveTrips = (
           return;
         }
         if (payload.new) {
-          onTrip(mapTripFromDB(payload.new));
+          const trip = mapTripFromDB(payload.new);
+          if (userId && userRole === 'rider' && trip.riderId !== userId) return;
+          // Driver sees the trip if they are the assigned driver, the current offered driver,
+          // OR they are in the offeredDriverIds list (simultaneous broadcast to all offered drivers).
+          if (userId && userRole === 'driver') {
+            const isAssignedDriver = trip.driverId === userId;
+            const isCurrentOffered = trip.currentOfferedDriverId === userId;
+            const isOffered = !!(trip.offeredDriverIds && trip.offeredDriverIds.includes(userId));
+            if (!isAssignedDriver && !isCurrentOffered && !isOffered) return;
+          }
+          onTrip(trip);
         }
       }
     )
@@ -792,7 +917,7 @@ export const subscribeToActiveTrips = (
   return {
     unsubscribe: () => {
       supabase.removeChannel(channel);
-    },
+    }
   };
 };
 
@@ -1372,14 +1497,21 @@ export const logAuditToDB = async (entry: AuditLogEntry): Promise<boolean> => {
   }
 };
 
-// --- SESSIONS (keep user logged in across reloads) ---
+// --- SESSIONS (keep user logged in across reloads & support multi-account tabs) ---
 
 const getDeviceId = (): string => {
   try {
-    let deviceId = localStorage.getItem('ezz_device_id');
+    // Priority to tab-isolated device ID so multiple tabs can run different accounts concurrently
+    let deviceId = sessionStorage.getItem('ezz_tab_device_id');
     if (!deviceId) {
-      deviceId = `dev_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
-      localStorage.setItem('ezz_device_id', deviceId);
+      const sharedDeviceId = localStorage.getItem('ezz_device_id');
+      if (sharedDeviceId) {
+        deviceId = sharedDeviceId;
+      } else {
+        deviceId = `dev_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+        localStorage.setItem('ezz_device_id', deviceId);
+      }
+      sessionStorage.setItem('ezz_tab_device_id', deviceId);
     }
     return deviceId;
   } catch {
@@ -1389,7 +1521,12 @@ const getDeviceId = (): string => {
 
 export const saveSession = async (role: 'RIDER' | 'DRIVER' | 'ADMIN', userId: string): Promise<boolean> => {
   try {
-    const deviceId = getDeviceId();
+    const deviceId = `tab_${role.toLowerCase()}_${userId}_${Math.random().toString(36).substring(2, 6)}`;
+    try {
+      sessionStorage.setItem('ezz_tab_device_id', deviceId);
+      localStorage.setItem('ezz_device_id', deviceId);
+    } catch {}
+
     const id = `session_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const { error } = await supabase.from('ezz_sessions').upsert({
       id,
@@ -1427,6 +1564,9 @@ export const loadSession = async (): Promise<{ role: 'RIDER' | 'DRIVER' | 'ADMIN
 export const clearSession = async (role: 'RIDER' | 'DRIVER' | 'ADMIN'): Promise<boolean> => {
   try {
     const deviceId = getDeviceId();
+    try {
+      sessionStorage.removeItem('ezz_tab_device_id');
+    } catch {}
     const { error } = await supabase.from('ezz_sessions').delete().eq('role', role).eq('device_id', deviceId);
     if (error) throw error;
     return true;
@@ -1469,5 +1609,240 @@ export const authenticateAdmin = async (phone: string, password: string): Promis
   } catch (err: any) {
     console.warn('Could not authenticate admin:', err.message);
     return null;
+  }
+};
+
+// ============================================================
+// ADS — local store advertising
+// ============================================================
+
+const DEFAULT_LOCAL_ADS: Ad[] = [];
+
+const getLocalAds = (): Ad[] => {
+  try {
+    const data = localStorage.getItem('ezz_ads_local');
+    if (!data) {
+      return [];
+    }
+    const parsed: Ad[] = JSON.parse(data);
+    return parsed.filter((a) => a.id !== 'sample-ad-1');
+  } catch {
+    return [];
+  }
+};
+
+const saveLocalAds = (ads: Ad[]) => {
+  try {
+    localStorage.setItem('ezz_ads_local', JSON.stringify(ads));
+  } catch (e) {
+    console.warn('Failed to save ads locally', e);
+  }
+};
+
+const mapAdRow = (row: any): Ad => ({
+  id: row.id,
+  storeName: row.store_name,
+  offerText: row.offer_text,
+  imageUrl: row.image_url,
+  phoneNumber: row.phone_number,
+  whatsapp: row.whatsapp ?? undefined,
+  placement: row.placement ?? 'all',
+  priority: row.priority ?? 1,
+  isActive: row.is_active ?? true,
+  startDate: row.start_date ?? undefined,
+  endDate: row.end_date ?? undefined,
+  clicks: row.clicks ?? 0,
+  whatsappClicks: row.whatsapp_clicks ?? row.whatsappClicks ?? 0,
+  adFee: row.ad_fee ?? row.adFee ?? 0,
+  dailyImpressionLimit: row.daily_impression_limit ?? row.dailyImpressionLimit ?? 0,
+  impressions: row.impressions ?? 0,
+  createdAt: row.created_at ?? new Date().toISOString(),
+});
+
+const adToRow = (ad: Partial<Ad>) => ({
+  store_name: ad.storeName,
+  offer_text: ad.offerText,
+  image_url: ad.imageUrl,
+  phone_number: ad.phoneNumber,
+  whatsapp: ad.whatsapp ?? null,
+  placement: ad.placement ?? 'all',
+  priority: ad.priority ?? 1,
+  is_active: ad.isActive ?? true,
+  start_date: ad.startDate ?? null,
+  end_date: ad.endDate ?? null,
+  ad_fee: ad.adFee ?? 0,
+  daily_impression_limit: ad.dailyImpressionLimit ?? 0,
+  whatsapp_clicks: ad.whatsappClicks ?? 0,
+});
+
+export const fetchAds = async (): Promise<Ad[]> => {
+  try {
+    const { data, error } = await supabase
+      .from('ads')
+      .select('*')
+      .order('is_active', { ascending: false })
+      .order('priority', { ascending: false })
+      .order('created_at', { ascending: false });
+    if (!error && data && data.length > 0) {
+      return data.map(mapAdRow);
+    }
+  } catch (err: any) {
+    console.warn('Could not fetch ads from Supabase:', err.message);
+  }
+  return getLocalAds();
+};
+
+export const fetchActiveAdsForPlacement = async (placement: 'home' | 'waiting' | 'popup'): Promise<Ad[]> => {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const { data, error } = await supabase
+      .from('ads')
+      .select('*')
+      .eq('is_active', true)
+      .or(`placement.eq.all,placement.eq.${placement}`)
+      .or(`start_date.is.null,start_date.lte.${today}`)
+      .or(`end_date.is.null,end_date.gte.${today}`)
+      .order('priority', { ascending: false })
+      .order('created_at', { ascending: false });
+    if (!error && data && data.length > 0) {
+      return data.map(mapAdRow);
+    }
+  } catch (err: any) {
+    console.warn('Could not fetch active ads:', err.message);
+  }
+  const local = getLocalAds();
+  const today = new Date().toISOString().slice(0, 10);
+  return local.filter((a) => a.isActive && (a.placement === 'all' || a.placement === placement) && (!a.endDate || a.endDate >= today));
+};
+
+const ADS_ADMIN_URL = `${import.meta.env.VITE_SUPABASE_URL || ''}/functions/v1/ads-admin`;
+
+const getAdminCreds = () => {
+  const phone = localStorage.getItem('ezz_admin_phone') || '';
+  const password = localStorage.getItem('ezz_admin_password') || '';
+  return { phone, password };
+};
+
+export const saveAd = async (ad: Partial<Ad> & { id?: string }): Promise<Ad | null> => {
+  let savedAd: Ad | null = null;
+  
+  // 1. Try Edge function
+  try {
+    const { phone, password } = getAdminCreds();
+    if (phone && password) {
+      const res = await fetch(ADS_ADMIN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'upsert', adminPhone: phone, adminPassword: password, ad }),
+      });
+      if (res.ok) {
+        const body = await res.json();
+        if (body.ad) savedAd = mapAdRow(body.ad);
+      }
+    }
+  } catch (err: any) {
+    console.warn('Edge function saveAd failed:', err.message);
+  }
+
+  // 2. Try direct Supabase table upsert if edge function was not available
+  if (!savedAd) {
+    try {
+      const row = adToRow(ad);
+      const id = ad.id || `ad_${Date.now()}`;
+      const { data, error } = await supabase.from('ads').upsert({ id, ...row }).select().single();
+      if (!error && data) {
+        savedAd = mapAdRow(data);
+      }
+    } catch (err: any) {
+      console.warn('Direct table saveAd failed:', err.message);
+    }
+  }
+
+  // 3. Fallback to local storage (Guarantees success)
+  const currentLocal = getLocalAds();
+  const newAd: Ad = savedAd || {
+    id: ad.id || `ad_local_${Date.now()}`,
+    storeName: ad.storeName || '',
+    offerText: ad.offerText || '',
+    imageUrl: ad.imageUrl || '',
+    phoneNumber: ad.phoneNumber || '',
+    whatsapp: ad.whatsapp || undefined,
+    placement: ad.placement || 'all',
+    priority: ad.priority || 1,
+    isActive: ad.isActive ?? true,
+    startDate: ad.startDate || undefined,
+    endDate: ad.endDate || undefined,
+    clicks: ad.clicks || 0,
+    adFee: ad.adFee || 0,
+    dailyImpressionLimit: ad.dailyImpressionLimit || 0,
+    impressions: ad.impressions || 0,
+    createdAt: new Date().toISOString(),
+  };
+
+  const existingIndex = currentLocal.findIndex(a => a.id === newAd.id);
+  if (existingIndex >= 0) {
+    currentLocal[existingIndex] = newAd;
+  } else {
+    currentLocal.unshift(newAd);
+  }
+  saveLocalAds(currentLocal);
+
+  return newAd;
+};
+
+export const deleteAd = async (id: string): Promise<boolean> => {
+  try {
+    const { phone, password } = getAdminCreds();
+    if (phone && password) {
+      await fetch(ADS_ADMIN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', adminPhone: phone, adminPassword: password, id }),
+      });
+    }
+  } catch {}
+
+  try {
+    await supabase.from('ads').delete().eq('id', id);
+  } catch {}
+
+  const currentLocal = getLocalAds().filter(a => a.id !== id);
+  saveLocalAds(currentLocal);
+  return true;
+};
+
+export const incrementAdClick = async (id: string): Promise<void> => {
+  try {
+    await supabase.rpc('increment_ad_click', { ad_id: id });
+  } catch {}
+  const current = getLocalAds();
+  const found = current.find((a) => a.id === id);
+  if (found) {
+    found.clicks = (found.clicks || 0) + 1;
+    saveLocalAds(current);
+  }
+};
+
+export const incrementAdWhatsappClick = async (id: string): Promise<void> => {
+  try {
+    await supabase.rpc('increment_ad_whatsapp', { ad_id: id });
+  } catch {}
+  const current = getLocalAds();
+  const found = current.find((a) => a.id === id);
+  if (found) {
+    found.whatsappClicks = (found.whatsappClicks || 0) + 1;
+    saveLocalAds(current);
+  }
+};
+
+export const incrementAdImpression = async (id: string): Promise<void> => {
+  try {
+    await supabase.rpc('increment_ad_impression', { ad_id: id });
+  } catch {}
+  const current = getLocalAds();
+  const found = current.find((a) => a.id === id);
+  if (found) {
+    found.impressions = (found.impressions || 0) + 1;
+    saveLocalAds(current);
   }
 };
