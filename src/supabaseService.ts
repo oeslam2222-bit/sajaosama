@@ -183,7 +183,22 @@ CREATE TABLE IF NOT EXISTS ezz_trips_history (
    dispatch_timer_max INTEGER,
    applied_promo_code TEXT,
    applied_promo_discount DOUBLE PRECISION
- );
+  );
+
+-- ============================================================
+-- 5a. جدول رسائل الشات
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ezz_chat_messages (
+  id TEXT PRIMARY KEY,
+  trip_id TEXT NOT NULL,
+  sender TEXT NOT NULL,
+  text TEXT NOT NULL,
+  timestamp TEXT NOT NULL,
+  created_at TEXT DEFAULT NOW()::TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ezz_chat_messages_trip_id ON ezz_chat_messages(trip_id);
+CREATE INDEX IF NOT EXISTS idx_ezz_chat_messages_created_at ON ezz_chat_messages(created_at);
 
 -- ============================================================
 -- 5b. جدول الأكواد الترويجية
@@ -953,6 +968,41 @@ export const saveTripToHistory = async (trip: Trip): Promise<boolean> => {
   }
 };
 
+// --- CHAT MESSAGES ---
+
+export const saveChatMessage = async (tripId: string, message: { id: string; sender: 'RIDER' | 'DRIVER'; text: string; timestamp: string }): Promise<boolean> => {
+  try {
+    const { error } = await supabase.from('ezz_chat_messages').insert({
+      id: message.id,
+      trip_id: tripId,
+      sender: message.sender,
+      text: message.text,
+      timestamp: message.timestamp,
+      created_at: new Date().toISOString(),
+    });
+    if (error) throw error;
+    return true;
+  } catch (err: any) {
+    console.warn('Could not save chat message to Supabase:', err.message);
+    return false;
+  }
+};
+
+export const fetchChatMessages = async (tripId: string): Promise<{ id: string; sender: 'RIDER' | 'DRIVER'; text: string; timestamp: string }[]> => {
+  try {
+    const { data, error } = await supabase
+      .from('ezz_chat_messages')
+      .select('id,sender,text,timestamp')
+      .eq('trip_id', tripId)
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    return data || [];
+  } catch (err: any) {
+    console.warn('Could not fetch chat messages from Supabase:', err.message);
+    return [];
+  }
+};
+
 export const fetchTripsHistoryCount = async ({
   userId,
   role,
@@ -1510,7 +1560,7 @@ const getDeviceId = (): string => {
 
 export const saveSession = async (role: 'RIDER' | 'DRIVER' | 'ADMIN', userId: string): Promise<boolean> => {
   try {
-    const deviceId = `tab_${role.toLowerCase()}_${userId}_${Math.random().toString(36).substring(2, 6)}`;
+    const deviceId = `persist_${role.toLowerCase()}_${userId}`;
     try {
       sessionStorage.setItem('ezz_tab_device_id', deviceId);
     } catch {}
