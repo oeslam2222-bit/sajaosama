@@ -1,0 +1,21 @@
+{
+  "short_name": "كابتن عز",
+  "name": "كابتن عز - Captain Ezz",
+  "icons": [
+    {
+      "src": "/ezz_taxi_icon.jpg",
+      "type": "image/jpeg",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/ezz_taxi_icon.jpg",
+      "type": "image/jpeg",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#0f172a",
+  "theme_color": "#2563eb",
+  "display": "standalone",
+  "orientation": "portrait"
+}

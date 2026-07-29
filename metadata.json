@@ -1,0 +1,8 @@
+{
+  "name": "Ezz Delivery",
+  "description": "A comprehensive, responsive ride-hailing and delivery platform like Uber, featuring real-time simulation, Rider/Driver/Admin roles, and a professional driver commission management system.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
