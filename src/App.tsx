@@ -1946,7 +1946,7 @@ export default function App() {
       if (drv) {
         saveDriver({ ...drv, status: 'BUSY' }).catch(() => {});
       }
-      saveActiveTrip(acceptedTrip).then((ok) => {
+      saveActiveTrip(acceptedTrip, true).then((ok) => {
         console.log('[handleAcceptTrip] saveActiveTrip ACCEPTED result:', ok);
         if (!ok) {
           // Race condition lost — another driver accepted first! Revert local state.
