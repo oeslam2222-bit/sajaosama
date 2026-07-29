@@ -115,6 +115,65 @@ export function calculateVehicleFare(distance: number, pricing: VehiclePricing):
   return Math.round(pricing.baseFare + kmCharge);
 }
 
+/**
+ * Calculates the complete trip fare including base vehicle pricing, multipliers,
+ * promo discounts, and commission rate/fixed fees in one unified standard calculation.
+ */
+export function calculateFullTripFare(
+  distance: number,
+  vehicleType: string,
+  stats: any,
+  appliedDiscount: number = 0
+): { baseFare: number; commission: number; finalFare: number } {
+  const pricing = getVehiclePricing(stats, vehicleType);
+  let computedBase = calculateVehicleFare(distance, pricing);
+
+  // Apply Peak/Night Hour multipliers
+  const peakHourMultiplier = stats?.peakHourMultiplier ?? 1.0;
+  const nightMultiplier = stats?.nightMultiplier ?? 1.0;
+  const peakStartHour = stats?.peakStartHour ?? 7;
+  const peakEndHour = stats?.peakEndHour ?? 9;
+  const nightStartHour = stats?.nightStartHour ?? 22;
+  const nightEndHour = stats?.nightEndHour ?? 5;
+
+  const now = new Date();
+  const currentHour = now.getHours();
+  const isPeakHour = currentHour >= peakStartHour && currentHour < peakEndHour;
+  const isNightHour = currentHour >= nightStartHour || currentHour < nightEndHour;
+
+  let timeMultiplier = 1.0;
+  if (isNightHour) {
+    timeMultiplier = nightMultiplier;
+  } else if (isPeakHour) {
+    timeMultiplier = peakHourMultiplier;
+  }
+
+  computedBase = Math.round(computedBase * timeMultiplier);
+  const discountedBase = Math.max(1, computedBase - appliedDiscount);
+
+  const commissionMode = stats?.commissionMode || 'fixed';
+  const commissionRateValue = stats?.incomingCommissionPercent ?? stats?.commissionRate ?? 10;
+  const incomingCommissionFixed = stats?.incomingCommission ?? 5;
+  const outgoingCommissionFixed = stats?.outgoingCommission ?? 5;
+
+  let commission = 0;
+  if (commissionMode === 'percent') {
+    commission = Math.round((discountedBase * commissionRateValue) / 100);
+  } else {
+    commission = (vehicleType === 'CAR' || vehicleType === 'MOTORCYCLE' || vehicleType === 'TOKTOK' || vehicleType === 'TRICYCLE')
+      ? incomingCommissionFixed
+      : outgoingCommissionFixed;
+  }
+
+  const finalFare = discountedBase + commission;
+
+  return {
+    baseFare: discountedBase,
+    commission,
+    finalFare,
+  };
+}
+
 export interface RouteStep {
   instruction: string;
   name: string;
