@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Location, Driver, Trip, Rider, SystemStats, TripStatus, Region } from './types';
+import { Location, Driver, Trip, Rider, SystemStats, TripStatus, Region, Ad } from './types';
 import { RiderView } from './components/RiderView';
 import { DriverView } from './components/DriverView';
 import { AdminView } from './components/AdminView';
 import { Smartphone, Globe, RotateCcw, Award, Shield, Car, Check, ChevronDown, MessageSquare, Upload, Lock, User, Bell, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { calculateHaversineDistance, estimateDrivingDistance, calculateDynamicFare, getVehiclePricing, calculateVehicleFare, RouteResult, RouteStep } from './utils/haversine';
+import { calculateHaversineDistance, estimateDrivingDistance, calculateDynamicFare, getVehiclePricing, calculateVehicleFare, calculateFullTripFare, RouteResult, RouteStep } from './utils/haversine';
 import { 
   checkSupabaseConnection, 
   fetchDrivers, 
@@ -35,7 +35,9 @@ import {
   loadSession,
   clearSession,
   markPromoCodeAsUsed,
-  fetchRegions
+  fetchRegions,
+  fetchAds,
+  fetchPendingTrips
 } from './supabaseService';
 import {
   requestNotificationPermission,
@@ -46,8 +48,21 @@ import {
   speakText,
   startLoudRepeatingAlarm,
   stopLoudRepeatingAlarm,
-  triggerVibration
+  triggerVibration,
+  notifyDriverWithAudioFirst,
+  unlockAudioContext,
+  initFirebaseFCM
 } from './utils/notifications';
+import { FirebaseFcmModal } from './components/FirebaseFcmModal';
+import {
+  getInitialDataSaverState,
+  setDataSaverState,
+  getAdaptivePollingInterval,
+  getCachedRoute,
+  setCachedRoute
+} from './utils/dataSaver';
+import { LegalModal } from './components/LegalModal';
+import { GuideModal } from './components/GuideModal';
 import { hashPassword, verifyPassword, isSecureHash } from './utils/security';
 import { auditLogger } from './utils/auditLog';
 import { riderAuthLimiter, driverAuthLimiter, adminAuthLimiter } from './utils/security';
@@ -98,9 +113,13 @@ export default function App() {
     id: '', name: '', phone: '', password: '', balance: 0, rating: 5.0, totalTrips: 0, isLoggedIn: false,
   });
   const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
+  const dismissedTripIdsRef = useRef<Set<string>>(new Set());
+  const lastTripCompletedRef = useRef(false);
+  const lastTripCancelledRef = useRef(false);
   const [noAvailableDrivers, setNoAvailableDrivers] = useState(false);
   const [pendingRequestCount, setPendingRequestCount] = useState(0);
   const [tripsHistory, setTripsHistory] = useState<Trip[]>([]);
+  const [ads, setAds] = useState<Ad[]>([]);
   const [stats, setStats] = useState<SystemStats>({
     commissionRate: 15,
     totalRevenue: 0,
@@ -149,6 +168,8 @@ export default function App() {
 
   const enableLowData = async () => {
     setLowDataMode(true);
+    setDataSaverMode(true);
+    setDataSaverState(true);
     if (supabaseConnected) {
       await saveStats({ ...stats, lowDataMode: true });
     }
@@ -196,6 +217,8 @@ export default function App() {
 
   const disableLowData = async () => {
     setLowDataMode(false);
+    setDataSaverMode(false);
+    setDataSaverState(false);
     if (supabaseConnected) {
       await saveStats({ ...stats, lowDataMode: false });
     }
@@ -205,7 +228,7 @@ export default function App() {
 
   const getRealRoute = useCallback(async (pickup: Location, dropoff: Location): Promise<RouteResult | null> => {
     const cacheKey = `${pickup.lat.toFixed(4)}_${pickup.lng.toFixed(4)}_${dropoff.lat.toFixed(4)}_${dropoff.lng.toFixed(4)}`;
-    const cached = routeCache[cacheKey];
+    const cached = routeCache[cacheKey] || getCachedRoute(pickup.lat, pickup.lng, dropoff.lat, dropoff.lng);
     if (cached && cached.distance > 0) return cached;
 
     const coordStr = `${pickup.lng},${pickup.lat};${dropoff.lng},${dropoff.lat}`;
@@ -281,6 +304,7 @@ export default function App() {
           }
           if (distance > 0 && geometry && geometry.length > 1) {
             const result: RouteResult = { distance, geometry, durationSeconds, steps };
+            setCachedRoute(pickup.lat, pickup.lng, dropoff.lat, dropoff.lng, result);
             setRouteCache(prev => {
               const updated = { ...prev, [cacheKey]: result };
               return updated;
@@ -306,7 +330,7 @@ export default function App() {
     dropoff: Location
   ): Promise<RouteResult | null> => {
     const cacheKey = `nav_${driverLat.toFixed(4)}_${driverLng.toFixed(4)}_${pickup.lat.toFixed(4)}_${pickup.lng.toFixed(4)}_${dropoff.lat.toFixed(4)}_${dropoff.lng.toFixed(4)}`;
-    const cached = routeCache[cacheKey];
+    const cached = routeCache[cacheKey] || getCachedRoute(driverLat, driverLng, pickup.lat, pickup.lng);
     if (cached && cached.distance > 0) return cached;
 
     const coordStr = `${driverLng},${driverLat};${pickup.lng},${pickup.lat};${dropoff.lng},${dropoff.lat}`;
@@ -514,9 +538,60 @@ export default function App() {
   });
   const [adminLoginError, setAdminLoginError] = useState('');
 
-  // Regions data
+  // Legal Modal State (Terms & Conditions / Privacy Policy)
+  const [showLegalModal, setShowLegalModal] = useState<boolean>(false);
+  const [legalModalTab, setLegalModalTab] = useState<'terms' | 'privacy'>('terms');
+
+  const openLegalTerms = () => {
+    setLegalModalTab('terms');
+    setShowLegalModal(true);
+  };
+
+  const openLegalPrivacy = () => {
+    setLegalModalTab('privacy');
+    setShowLegalModal(true);
+  };
+
+  // User & Driver Interactive Guide Modal State
+  const [showGuideModal, setShowGuideModal] = useState<boolean>(false);
+  const [guideModalTab, setGuideModalTab] = useState<'rider' | 'driver' | 'about'>('rider');
+
+  const openGuideModal = (tab: 'rider' | 'driver' | 'about' = 'rider') => {
+    setGuideModalTab(tab);
+    setShowGuideModal(true);
+  };
+
+  // Data Saver state & Auto-detection for slow networks
+  const [dataSaverMode, setDataSaverMode] = useState<boolean>(getInitialDataSaverState);
+
+  const handleToggleDataSaver = () => {
+    setDataSaverMode((prev) => {
+      const next = !prev;
+      setDataSaverState(next);
+      triggerToast(
+        next ? (lang === 'ar' ? '⚡ تم تفعيل توفير البيانات' : '⚡ Data Saver Enabled') : (lang === 'ar' ? '⚡ تم إيقاف توفير البيانات' : '⚡ Data Saver Disabled'),
+        next ? (lang === 'ar' ? 'تم تقليل استخدام الإنترنت للباقة مع الحفاظ على كافة المميزات' : 'Optimized data consumption for mobile network') : (lang === 'ar' ? 'تم العودة للوضع الطبيعي' : 'Returned to standard mode'),
+        'success'
+      );
+      return next;
+    });
+  };
   const [regions, setRegions] = useState<Region[]>([]);
   const [selectedPickupRegion, setSelectedPickupRegion] = useState<string>('');
+  const [pendingTrips, setPendingTrips] = useState<Trip[]>([]);
+  const [showFcmModal, setShowFcmModal] = useState<boolean>(false);
+
+  // Initialize Firebase FCM token & listeners on mount
+  useEffect(() => {
+    initFirebaseFCM((payload) => {
+      console.log('Foreground FCM received in App:', payload);
+      triggerToast(
+        payload.notification?.title || '🚨 إشعار جديد من فايربيز (FCM)',
+        payload.notification?.body || 'تحديث جديد لرحلتك حالاً',
+        'new_trip'
+      );
+    });
+  }, []);
 
   // Premium In-App Strong Toast Notifications State
   const [toast, setToast] = useState<{ title: string; message: string; type: 'info' | 'success' | 'warning' | 'new_trip' } | null>(null);
@@ -646,7 +721,12 @@ export default function App() {
           setRegions(dbRegions);
         }
 
-        const dbActiveTrip = await fetchActiveTrip();
+        const dbAds = await fetchAds();
+        if (dbAds) {
+          setAds(dbAds);
+        }
+
+        const dbActiveTrip = await fetchActiveTrip(driverIsLoggedIn ? selectedDriverId : undefined, driverIsLoggedIn ? 'driver' : undefined);
         if (dbActiveTrip && dbActiveTrip !== 'NO_TABLE') {
           setActiveTripWithTracking(dbActiveTrip);
         }
@@ -769,16 +849,35 @@ export default function App() {
     if (!supabaseConnected) return;
     const sub = subscribeToActiveTrips((trip) => {
       setActiveTripWithTracking((prev) => {
-        if (!trip) {
-          if (prev && prev.status !== 'SEARCHING' && prev.status !== 'ACCEPTED' && prev.status !== 'ARRIVED' && prev.status !== 'STARTED' && prev.status !== 'CANCELLED') {
-            return null;
+        if (!trip || trip.status === 'CANCELLED') {
+          if (prev && prev.status === 'COMPLETED' && !dismissedTripIdsRef.current.has(prev.id)) {
+            return prev;
           }
-          return prev;
+          return null;
+        }
+        // If driver is logged in and another driver accepted this trip, clear it from this driver's screen
+        if (driverIsLoggedIn && trip.status === 'ACCEPTED' && trip.driverId && trip.driverId !== selectedDriverId) {
+          return null;
+        }
+        if (dismissedTripIdsRef.current.has(trip.id)) {
+          return null;
         }
         if (!prev) return trip;
         if (prev.id !== trip.id) return trip;
-        if (trip.status === 'CANCELLED' || trip.status === 'COMPLETED') return null;
-        if (prev.status === 'CANCELLED' || prev.status === 'COMPLETED') return null;
+
+        if (prev.status === 'COMPLETED' || trip.status === 'COMPLETED') {
+          return {
+            ...prev,
+            ...trip,
+            riderRatingToDriver: trip.riderRatingToDriver ?? prev.riderRatingToDriver,
+            riderFeedbackTags: trip.riderFeedbackTags?.length ? trip.riderFeedbackTags : prev.riderFeedbackTags,
+            riderFeedbackComment: trip.riderFeedbackComment || prev.riderFeedbackComment,
+            driverRatingToRider: trip.driverRatingToRider ?? prev.driverRatingToRider,
+            driverFeedbackTags: trip.driverFeedbackTags?.length ? trip.driverFeedbackTags : prev.driverFeedbackTags,
+            driverFeedbackComment: trip.driverFeedbackComment || prev.driverFeedbackComment,
+          };
+        }
+
         if (prev.status !== trip.status) {
           const prevOrder = TRIP_STATUS_ORDER[prev.status] ?? 0;
           const tripOrder = TRIP_STATUS_ORDER[trip.status] ?? 0;
@@ -786,28 +885,71 @@ export default function App() {
         }
         return trip;
       });
-    });
+    }, driverIsLoggedIn ? selectedDriverId : undefined, driverIsLoggedIn ? 'driver' : 'rider');
     return () => sub.unsubscribe();
-  }, [supabaseConnected]);
+  }, [supabaseConnected, driverIsLoggedIn, selectedDriverId]);
 
   // 1c. Dedicated polling for active trip — works even when tab is in background
   useEffect(() => {
     if (!supabaseConnected) return;
 
+    const pollInterval = getAdaptivePollingInterval(3000, dataSaverMode, !!activeTrip);
+
     const interval = setInterval(async () => {
       try {
-        const remoteActiveTrip = await fetchActiveTrip();
-        if (!remoteActiveTrip || remoteActiveTrip === 'NO_TABLE') return;
+        const remoteActiveTrip = await fetchActiveTrip(driverIsLoggedIn ? selectedDriverId : undefined, driverIsLoggedIn ? 'driver' : undefined);
+        if (!remoteActiveTrip || remoteActiveTrip === 'NO_TABLE') {
+          setActiveTripWithTracking((prev) => {
+            if (prev && prev.status === 'COMPLETED' && !dismissedTripIdsRef.current.has(prev.id)) {
+              return prev;
+            }
+            if (prev && prev.status === 'CANCELLED') {
+              return null;
+            }
+            return prev;
+          });
+          return;
+        }
+
+        if (dismissedTripIdsRef.current.has(remoteActiveTrip.id)) {
+          setActiveTripWithTracking((prev) => {
+            if (prev && prev.id === remoteActiveTrip.id) return null;
+            return prev;
+          });
+          return;
+        }
+
+        if (remoteActiveTrip.status === 'CANCELLED') {
+          setActiveTripWithTracking((prev) => {
+            if (prev && prev.id === remoteActiveTrip.id) return null;
+            return prev;
+          });
+          return;
+        }
 
         setActiveTripWithTracking((prev) => {
           if (!prev) {
+            if (remoteActiveTrip.status === 'COMPLETED' && dismissedTripIdsRef.current.has(remoteActiveTrip.id)) {
+              return null;
+            }
             markLocalStatusChange(remoteActiveTrip.status);
             return remoteActiveTrip;
           }
-          if (prev.id !== remoteActiveTrip.id) return prev;
-          if (remoteActiveTrip.status === 'CANCELLED' || remoteActiveTrip.status === 'COMPLETED') {
-            return null;
+          if (prev.id !== remoteActiveTrip.id) return remoteActiveTrip;
+
+          if (prev.status === 'COMPLETED' || remoteActiveTrip.status === 'COMPLETED') {
+            return {
+              ...prev,
+              ...remoteActiveTrip,
+              riderRatingToDriver: remoteActiveTrip.riderRatingToDriver ?? prev.riderRatingToDriver,
+              riderFeedbackTags: remoteActiveTrip.riderFeedbackTags?.length ? remoteActiveTrip.riderFeedbackTags : prev.riderFeedbackTags,
+              riderFeedbackComment: remoteActiveTrip.riderFeedbackComment || prev.riderFeedbackComment,
+              driverRatingToRider: remoteActiveTrip.driverRatingToRider ?? prev.driverRatingToRider,
+              driverFeedbackTags: remoteActiveTrip.driverFeedbackTags?.length ? remoteActiveTrip.driverFeedbackTags : prev.driverFeedbackTags,
+              driverFeedbackComment: remoteActiveTrip.driverFeedbackComment || prev.driverFeedbackComment,
+            };
           }
+
           if (prev.status !== remoteActiveTrip.status) {
             if (shouldSkipPollingUpdate(remoteActiveTrip.status)) {
               console.log('[Polling] Skipping stale DB update:', remoteActiveTrip.status, 'local is newer:', prev.status);
@@ -815,18 +957,27 @@ export default function App() {
             }
             const prevOrder = TRIP_STATUS_ORDER[prev.status] ?? 0;
             const remoteOrder = TRIP_STATUS_ORDER[remoteActiveTrip.status] ?? 0;
-            if (remoteOrder <= prevOrder) return prev;
+            if (remoteOrder < prevOrder) return prev;
           }
+
+          // Preserve / merge chat messages if remote has newer or more messages
+          const remoteMsgs = remoteActiveTrip.chatMessages || [];
+          const localMsgs = prev.chatMessages || [];
+          if (remoteMsgs.length > localMsgs.length || JSON.stringify(remoteMsgs) !== JSON.stringify(localMsgs)) {
+            markLocalStatusChange(remoteActiveTrip.status);
+            return { ...remoteActiveTrip, chatMessages: remoteMsgs };
+          }
+
           markLocalStatusChange(remoteActiveTrip.status);
           return remoteActiveTrip;
         });
       } catch (err) {
         console.warn('Active trip polling error:', err);
       }
-    }, 3000);
+    }, pollInterval);
 
     return () => clearInterval(interval);
-  }, [supabaseConnected]);
+  }, [supabaseConnected, dataSaverMode, !!activeTrip]);
 
   // 1d. Dedicated polling for drivers list — keeps driver screen updated in background
   const activeTripRefForPolling = useRef<Trip | null>(null);
@@ -834,6 +985,8 @@ export default function App() {
 
   useEffect(() => {
     if (!supabaseConnected) return;
+
+    const pollInterval = getAdaptivePollingInterval(3000, dataSaverMode, false);
 
     const interval = setInterval(async () => {
       try {
@@ -860,13 +1013,19 @@ export default function App() {
             });
           });
         }
+
+        // Fetch pending trip requests for drivers list view
+        const remotePending = await fetchPendingTrips();
+        if (remotePending) {
+          setPendingTrips(remotePending);
+        }
       } catch (err) {
         console.warn('Drivers polling error:', err);
       }
-    }, 3000);
+    }, pollInterval);
 
     return () => clearInterval(interval);
-  }, [supabaseConnected]);
+  }, [supabaseConnected, dataSaverMode]);
 
   // 2. General-purpose sync (riders + stats) — still paused when tab hidden to save bandwidth
   const pricingSaveGuardUntilRef = useRef<number>(0);
@@ -938,148 +1097,178 @@ export default function App() {
   }, [supabaseConnected]);
 
 
-  // 2.5 Unified Reactive Notification & Strong Alerts Watcher
-  const prevStatusRef = useRef<string | undefined>(undefined);
-  const prevMsgCountRef = useRef<number>(0);
-  const prevTripIdRef = useRef<string | undefined>(undefined);
-  const lastNotifiedStatusRef = useRef<string | undefined>(undefined);
+  // 2.5 Unified Reactive Notification & Strong Alerts Watcher with Deduplication
+  const notifiedEventsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!activeTrip) {
-      if (prevStatusRef.current && prevStatusRef.current !== 'COMPLETED' && prevStatusRef.current !== 'SEARCHING') {
-        if (lastNotifiedStatusRef.current !== 'CANCELLED') {
-          lastNotifiedStatusRef.current = 'CANCELLED';
-          playNotificationSound('alert');
-          sendNativeNotification('⚠️ تم إلغاء الرحلة', 'تم إلغاء المشوار الحالي من قبل الطرف الآخر.', '❌');
-          triggerToast('⚠️ تم إلغاء الرحلة', 'تم إلغاء المشوار الحالي من قبل الطرف الآخر.', 'warning');
+      if (notifiedEventsRef.current.has('had_trip') && !notifiedEventsRef.current.has('cancelled_notified')) {
+        notifiedEventsRef.current.add('cancelled_notified');
+        if (lastTripCompletedRef.current) {
+          lastTripCompletedRef.current = false;
+          return;
         }
+        if (lastTripCancelledRef.current) {
+          lastTripCancelledRef.current = false;
+          return;
+        }
+        playNotificationSound('alert');
+        sendNativeNotification('⚠️ تم إلغاء الرحلة', 'تم إلغاء المشوار الحالي من قبل الطرف الآخر.', '❌');
+        triggerToast('⚠️ تم إلغاء الرحلة', 'تم إلغاء المشوار الحالي من قبل الطرف الآخر.', 'warning');
       }
-      prevStatusRef.current = undefined;
-      prevMsgCountRef.current = 0;
-      prevTripIdRef.current = undefined;
-      lastNotifiedStatusRef.current = undefined;
       return;
     }
+
+    notifiedEventsRef.current.add('had_trip');
+    notifiedEventsRef.current.delete('cancelled_notified');
 
     const currentTripId = activeTrip.id;
     const currentStatus = activeTrip.status;
-    const currentMsgCount = activeTrip.chatMessages?.length || 0;
 
-    const isNewTrip = prevTripIdRef.current !== currentTripId;
-    prevTripIdRef.current = currentTripId;
+    const statusEventKey = `${currentTripId}_status_${currentStatus}`;
 
-    if (isNewTrip) {
-      prevStatusRef.current = currentStatus;
-      prevMsgCountRef.current = currentMsgCount;
-      lastNotifiedStatusRef.current = undefined;
+     if (!notifiedEventsRef.current.has(statusEventKey)) {
+       notifiedEventsRef.current.add(statusEventKey);
 
-      if (currentStatus === 'SEARCHING' && driverIsLoggedIn) {
-        playNotificationSound('new_trip');
-        sendNativeNotification(
-          '🚖 طلب رحلة جديد متاح!',
-          `العميل ${activeTrip.riderName} يطلب رحلة من ${activeTrip.pickup.nameAr} إلى ${activeTrip.dropoff.nameAr}.`,
-          '🚗'
-        );
-        startTitleFlash('🚨 طلب رحلة جديد!');
-        triggerToast(
-          '🚖 طلب رحلة جديد متاح!',
-          `العميل ${activeTrip.riderName} يطلب رحلة من ${activeTrip.pickup.nameAr} إلى ${activeTrip.dropoff.nameAr}.`,
-          'new_trip'
-        );
-      }
-      return;
-    }
+       if (currentStatus === 'SEARCHING' && driverIsLoggedIn) {
+         lastTripCompletedRef.current = false;
+         lastTripCancelledRef.current = false;
+         sendNativeNotification(
+           '🚖 طلب رحلة جديد متاح!',
+           `العميل ${activeTrip.riderName} يطلب رحلة من ${activeTrip.pickup.nameAr} إلى ${activeTrip.dropoff.nameAr}.`,
+           '🚗'
+         );
+         startTitleFlash('🚨 طلب رحلة جديد!');
+         triggerToast(
+           '🚖 طلب رحلة جديد متاح!',
+           `العميل ${activeTrip.riderName} يطلب رحلة من ${activeTrip.pickup.nameAr} إلى ${activeTrip.dropoff.nameAr}.`,
+           'new_trip'
+         );
+       } else if (currentStatus === 'ACCEPTED') {
+         playNotificationSound('trip_accepted');
+         speakText(
+           lang === 'ar'
+             ? `تم قبول رحلتك، الكابتن ${activeTrip.driverName || 'عز الدين'} في الطريق إليك الآن.`
+             : `Your ride has been accepted. Captain ${activeTrip.driverName || 'Ezz'} is on the way.`,
+           lang === 'ar' ? 'ar-EG' : 'en-US'
+         );
+         sendNativeNotification(
+           '🚗 تم قبول رحلتك!',
+           `الكابتن ${activeTrip.driverName || 'عز الدين'} في الطريق إليك الآن.`,
+           '✅'
+         );
+         startTitleFlash('🚗 الكابتن قادم!');
+         setTimeout(stopTitleFlash, 5000);
+         triggerVibration([200, 100, 200, 100, 300]);
+         triggerToast(
+           '🚗 تم قبول رحلتك!',
+           `الكابتن ${activeTrip.driverName || 'عز الدين'} في الطريق إليك الآن.`,
+           'success'
+         );
+       } else if (currentStatus === 'ARRIVED') {
+         playNotificationSound('trip_accepted');
+         speakText(
+           lang === 'ar'
+             ? 'وصل الكابتن إلى موقعك وهو في انتظارك الآن.'
+             : 'The captain has arrived at your location.',
+           lang === 'ar' ? 'ar-EG' : 'en-US'
+         );
+         sendNativeNotification(
+           '📍 الكابتن وصل!',
+           'الكابتن متواجد في نقطة الركوب الآن بانتظارك.',
+           '⭐'
+         );
+         triggerToast(
+           '📍 الكابتن وصل!',
+           'الكابتن متواجد في نقطة الركوب الآن بانتظارك.',
+           'info'
+         );
+       } else if (currentStatus === 'STARTED') {
+         playNotificationSound('trip_accepted');
+         speakText(
+           lang === 'ar'
+             ? 'بدأت الرحلة الآن، نتمنى لك مشواراً آمناً.'
+             : 'The ride has started, wish you a safe trip.',
+           lang === 'ar' ? 'ar-EG' : 'en-US'
+         );
+         triggerToast(
+           '🚀 بدأت الرحلة الآن!',
+           'نتمنى لك رحلة سعيدة وآمنة مع كابتن عز.',
+           'success'
+         );
+       } else if (currentStatus === 'COMPLETED') {
+         lastTripCompletedRef.current = true;
+         playNotificationSound('trip_completed');
+         speakText(
+           lang === 'ar'
+             ? 'حمد لله على السلامة، تم إكمال الرحلة بنجاح وشكراً لاختيارك عز.'
+             : 'Welcome back, trip completed successfully. Thank you for choosing Ezz.',
+           lang === 'ar' ? 'ar-EG' : 'en-US'
+         );
+         sendNativeNotification(
+           '🎉 وصلت بالسلامة!',
+           'تم إكمال الرحلة بنجاح. شكراً لك على اختيارك كابتن عز!',
+           '✨'
+         );
+         startTitleFlash('✨ وصلت بالسلامة!');
+         setTimeout(stopTitleFlash, 5000);
+         triggerToast(
+           '🎉 وصلت بالسلامة!',
+           'تم إكمال الرحلة بنجاح. شكراً لك على اختيارك كابتن عز!',
+           'success'
+         );
+       } else if (currentStatus === 'CANCELLED') {
+         lastTripCancelledRef.current = true;
+         playNotificationSound('alert');
+         speakText(
+           lang === 'ar'
+             ? 'تم إلغاء الرحلة بسبب عدم قبول أي سائق. يمكنك طلب رحلة جديدة.'
+             : 'The ride was cancelled because no driver accepted. You can request a new ride.',
+           lang === 'ar' ? 'ar-EG' : 'en-US'
+         );
+         sendNativeNotification(
+           '❌ تم إلغاء الرحلة',
+           lang === 'ar'
+             ? 'لم يقبل أي سائق الرحلة. يمكنك طلب رحلة جديدة.'
+             : 'No driver accepted the ride. You can request a new ride.',
+           '❌'
+         );
+         triggerToast(
+           '❌ تم إلغاء الرحلة',
+           lang === 'ar'
+             ? 'لم يقبل أي سائق الرحلة. يمكنك طلب رحلة جديدة.'
+             : 'No driver accepted the ride. You can request a new ride.',
+           'warning'
+         );
+       }
+     }
 
-    const prevStatus = prevStatusRef.current;
-    if (prevStatus !== currentStatus && lastNotifiedStatusRef.current !== currentStatus) {
-      prevStatusRef.current = currentStatus;
-      lastNotifiedStatusRef.current = currentStatus;
-
-      if (currentStatus === 'ACCEPTED') {
-        playNotificationSound('trip_accepted');
-        speakText(lang === 'ar' ? `تم قبول رحلتك، الكابتن ${activeTrip.driverName || 'عز الدين'} في الطريق إليك الآن.` : `Your ride has been accepted. Captain ${activeTrip.driverName || 'Ezz'} is on the way.`, lang === 'ar' ? 'ar-EG' : 'en-US');
-        sendNativeNotification(
-          '🚗 تم قبول رحلتك!',
-          `الكابتن ${activeTrip.driverName || 'عز الدين'} في الطريق إليك الآن.`,
-          '✅'
-        );
-        startTitleFlash('🚗 الكابتن قادم!');
-        setTimeout(stopTitleFlash, 5000);
-        triggerVibration([200, 100, 200, 100, 300]);
-        triggerToast(
-          '🚗 تم قبول رحلتك!',
-          `الكابتن ${activeTrip.driverName || 'عز الدين'} في الطريق إليك الآن.`,
-          'success'
-        );
-      } else if (currentStatus === 'ARRIVED') {
-        playNotificationSound('trip_accepted');
-        speakText(lang === 'ar' ? 'وصل الكابتن إلى موقعك وهو في انتظارك الآن.' : 'The captain has arrived at your location.', lang === 'ar' ? 'ar-EG' : 'en-US');
-        sendNativeNotification(
-          '📍 الكابتن وصل!',
-          'الكابتن متواجد في نقطة الركوب الآن بانتظارك.',
-          '⭐'
-        );
-        triggerToast(
-          '📍 الكابتن وصل!',
-          'الكابتن متواجد في نقطة الركوب الآن بانتظارك.',
-          'info'
-        );
-      } else if (currentStatus === 'STARTED') {
-        playNotificationSound('trip_accepted');
-        speakText(lang === 'ar' ? 'بدأت الرحلة الآن، نتمنى لك مشواراً آمناً.' : 'The ride has started, wish you a safe trip.', lang === 'ar' ? 'ar-EG' : 'en-US');
-        triggerToast(
-          '🚀 بدأت الرحلة الآن!',
-          'نتمنى لك رحلة سعيدة وآمنة مع كابتن عز.',
-          'success'
-        );
-      } else if (currentStatus === 'COMPLETED') {
-        playNotificationSound('trip_completed');
-        speakText(lang === 'ar' ? 'حمد لله على السلامة، تم إكمال الرحلة بنجاح وشكراً لاختيارك عز.' : 'Welcome back, trip completed successfully. Thank you for choosing Ezz.', lang === 'ar' ? 'ar-EG' : 'en-US');
-        sendNativeNotification(
-          '🎉 وصلت بالسلامة!',
-          'تم إكمال الرحلة بنجاح. شكراً لك على اختيارك كابتن عز!',
-          '✨'
-        );
-        startTitleFlash('✨ وصلت بالسلامة!');
-        setTimeout(stopTitleFlash, 5000);
-        triggerToast(
-          '🎉 وصلت بالسلامة!',
-          'تم إكمال الرحلة بنجاح. شكراً لك على اختيارك كابتن عز!',
-          'success'
-        );
-      }
-    }
-
-    if (currentMsgCount > prevMsgCountRef.current) {
-      const lastMsg = activeTrip.chatMessages?.[currentMsgCount - 1];
-      if (lastMsg) {
-        playNotificationSound('chat_message');
-        sendNativeNotification(
-          `💬 رسالة جديدة من ${lastMsg.sender === 'DRIVER' ? 'الكابتن' : 'العميل'}`,
-          lastMsg.text,
-          '💬'
-        );
-        triggerToast(
-          `💬 رسالة جديدة من ${lastMsg.sender === 'DRIVER' ? 'الكابتن' : 'العميل'}`,
-          lastMsg.text,
-          'info'
-        );
-      }
-      prevMsgCountRef.current = currentMsgCount;
+    // Chat Message Notifications
+    if (activeTrip.chatMessages && activeTrip.chatMessages.length > 0) {
+      activeTrip.chatMessages.forEach((msg) => {
+        const msgEventKey = `${currentTripId}_msg_${msg.id}`;
+        if (!notifiedEventsRef.current.has(msgEventKey)) {
+          notifiedEventsRef.current.add(msgEventKey);
+          playNotificationSound('chat_message');
+          sendNativeNotification(
+            `💬 رسالة جديدة من ${msg.sender === 'DRIVER' ? 'الكابتن' : 'العميل'}`,
+            msg.text,
+            '💬'
+          );
+          triggerToast(
+            `💬 رسالة جديدة من ${msg.sender === 'DRIVER' ? 'الكابتن' : 'العميل'}`,
+            msg.text,
+            'info'
+          );
+        }
+      });
     }
   }, [activeTrip, driverIsLoggedIn, lang]);
 
   // 1.5. Loud Alarm Handler Loop for Driver Ride Requests
   useEffect(() => {
     if (activeTrip && activeTrip.status === 'SEARCHING' && driverIsLoggedIn && activeTrip.currentOfferedDriverId === selectedDriverId) {
-      // Current driver is being offered a trip! Start loud looping siren & Arabic Speech Synthesis
-      const pickupAr = activeTrip.pickup.nameAr;
-      const dropoffAr = activeTrip.dropoff.nameAr;
-      const fareVal = activeTrip.fare;
-      const messageAr = `تنبيه كابتن! هناك طلب مشوار جديد متاح لك الآن من ${pickupAr} إلى ${dropoffAr} بقيمة ${fareVal} جنيه.`;
-      const messageEn = `New ride request from ${activeTrip.pickup.nameEn} to ${activeTrip.dropoff.nameEn} for ${fareVal} EGP.`;
-      
-      startLoudRepeatingAlarm(messageEn, 'new_trip', messageAr);
+      // Silent text-only notification handled by reactive watcher / background poller
     } else {
       // No active offered trip for this driver, stop any ringing alarm
       stopLoudRepeatingAlarm();
@@ -1121,7 +1310,7 @@ export default function App() {
     let lastNotifiedOfferedDriverId: string | null = null;
     const interval = setInterval(async () => {
       try {
-        const remoteActiveTrip = await fetchActiveTrip();
+        const remoteActiveTrip = await fetchActiveTrip(selectedDriverId, 'driver');
         if (!remoteActiveTrip || remoteActiveTrip === 'NO_TABLE') return;
 
         // If trip is no longer SEARCHING, clear notification state and stop alarm
@@ -1159,29 +1348,19 @@ export default function App() {
             lastNotifiedTripId = remoteActiveTrip.id;
             lastNotifiedOfferedDriverId = remoteActiveTrip.currentOfferedDriverId || null;
             
-            // Send browser notification
-            if ('Notification' in window && Notification.permission === 'granted') {
-              try {
-                await new Notification('🚖 New Ride Request!', {
-                  body: `${remoteActiveTrip.pickup.nameEn} → ${remoteActiveTrip.dropoff.nameEn} | ${remoteActiveTrip.fare} EGP`,
-                  icon: 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🚖</text></svg>',
-                  badge: 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🚖</text></svg>',
-                  tag: `trip-${remoteActiveTrip.id}`,
-                  requireInteraction: true,
-                });
-              } catch (e) {
-                console.warn('Background notification failed:', e);
-              }
-            }
+            const speechMsg = lang === 'ar'
+              ? `طلب رحلة جديد بقيمة ${remoteActiveTrip.fare} جنيه فقط`
+              : `طلب رحلة جديد بقيمة ${remoteActiveTrip.fare} جنيه فقط`;
 
-            // Also play sound and speak
-            playNotificationSound('new_trip');
-            speakText(
-              lang === 'ar'
-                ? `تنبيه كابتن! طلب مشوار جديد من ${remoteActiveTrip.pickup.nameAr} إلى ${remoteActiveTrip.dropoff.nameAr} بقيمة ${remoteActiveTrip.fare} جنيه.`
-                : `New ride request from ${remoteActiveTrip.pickup.nameEn} to ${remoteActiveTrip.dropoff.nameEn} for ${remoteActiveTrip.fare} EGP.`,
-              lang === 'ar' ? 'ar-EG' : 'en-US'
-            );
+            // Audio-First Priority: Sound & Speech FIRST, then ServiceWorker/Native Notification SECOND
+            notifyDriverWithAudioFirst({
+              title: lang === 'ar' ? '🚖 طلب مشوار جديد!' : '🚖 New Ride Request!',
+              body: `طلب رحلة جديد بقيمة ${remoteActiveTrip.fare} جنيه فقط (${remoteActiveTrip.pickup.nameAr || remoteActiveTrip.pickup.nameEn} ← ${remoteActiveTrip.dropoff.nameAr || remoteActiveTrip.dropoff.nameEn})`,
+              soundType: 'new_trip',
+              speechText: speechMsg,
+              lang: 'ar-EG',
+              tag: `trip-${remoteActiveTrip.id}`,
+            });
           }
         }
       } catch (err) {
@@ -1316,22 +1495,32 @@ export default function App() {
           return prev;
         }
 
-        const currentTimer = prev.dispatchTimer !== undefined ? prev.dispatchTimer : 600;
+        const currentTimer = prev.dispatchTimer !== undefined ? prev.dispatchTimer : 180;
 
-        if (currentTimer <= 1) {
-          clearInterval(timer);
-          return {
-            ...prev,
-            status: 'CANCELLED' as TripStatus,
-            currentOfferedDriverId: undefined,
-            dispatchTimer: 0,
-          };
-        }
+         if (currentTimer <= 1) {
+           clearInterval(timer);
+           return {
+             ...prev,
+             status: 'CANCELLED' as TripStatus,
+             currentOfferedDriverId: undefined,
+             dispatchTimer: 0,
+           };
+         }
 
-        return {
-          ...prev,
-          dispatchTimer: currentTimer - 1,
-        };
+         if (currentTimer === 30) {
+           sendNativeNotification(
+             '⏰ الرحلة ستلغى قريباً',
+             lang === 'ar'
+               ? 'لم يقبل أي سائق الرحلة خلال 30 ثانية. ستلغى الرحلة قريباً.'
+               : 'No driver accepted the ride within 30 seconds. The ride will be cancelled soon.',
+             '⏰'
+           );
+         }
+
+         return {
+           ...prev,
+           dispatchTimer: currentTimer - 1,
+         };
       });
     }, 1000);
 
@@ -1431,6 +1620,16 @@ export default function App() {
     promoCode?: string,
     promoCodeId?: string
   ) => {
+    // 🛡️ Multi-booking protection: Prevent rider from requesting another trip if they already have an active one
+    if (activeTrip && activeTrip.riderId === rider.id && ['SEARCHING', 'ACCEPTED', 'ARRIVED', 'STARTED'].includes(activeTrip.status)) {
+      triggerToast(
+        lang === 'ar' ? 'لديك رحلة جارية بالفعل' : 'Active Ride In Progress',
+        lang === 'ar' ? 'لا يمكنك طلب رحلة جديدة حتى إنهاء الرحلة الحالية.' : 'You cannot request a new trip until your current trip ends.',
+        'warning'
+      );
+      return;
+    }
+
     if (!selectedPickup || !selectedDropoff) return;
     const pLoc = locations.find((l) => l.id === selectedPickup);
     const dLoc = locations.find((l) => l.id === selectedDropoff);
@@ -1467,30 +1666,6 @@ export default function App() {
       distance = Math.max(1, parseFloat(fallbackDistance.toFixed(2)));
     }
 
-    const pricing = getVehiclePricing(stats, requestedVehicleType);
-    let computedFare = calculateVehicleFare(distance, pricing);
-
-    const peakHourMultiplier = stats.peakHourMultiplier ?? 1.0;
-    const nightMultiplier = stats.nightMultiplier ?? 1.0;
-    const peakStartHour = stats.peakStartHour ?? 7;
-    const peakEndHour = stats.peakEndHour ?? 9;
-    const nightStartHour = stats.nightStartHour ?? 22;
-    const nightEndHour = stats.nightEndHour ?? 5;
-
-    const now = new Date();
-    const currentHour = now.getHours();
-    const isPeakHour = currentHour >= peakStartHour && currentHour < peakEndHour;
-    const isNightHour = currentHour >= nightStartHour || currentHour < nightEndHour;
-
-    let timeMultiplier = 1.0;
-    if (isNightHour) {
-      timeMultiplier = nightMultiplier;
-    } else if (isPeakHour) {
-      timeMultiplier = peakHourMultiplier;
-    }
-
-    computedFare = computedFare * timeMultiplier;
-
     let appliedDiscount = 0;
     let appliedPromoCode: string | undefined;
     let appliedPromoDiscount: number | undefined;
@@ -1504,23 +1679,14 @@ export default function App() {
       appliedPromoCode = promoCode;
       appliedPromoDiscount = appliedDiscount;
     }
-    const discountedFare = Math.max(1, Math.round(computedFare) - appliedDiscount);
-    const commissionMode = stats.commissionMode || 'fixed';
-    const commissionRateValue = stats.commissionRate ?? 15;
-    const incomingCommissionFixed = stats.incomingCommission ?? 5;
-    const outgoingCommissionFixed = stats.outgoingCommission ?? 5;
-    const commission =
-      commissionMode === 'percent'
-        ? Math.round((discountedFare * commissionRateValue) / 100)
-        : (requestedVehicleType === 'CAR' || requestedVehicleType === 'MOTORCYCLE' || requestedVehicleType === 'TOKTOK' || requestedVehicleType === 'TRICYCLE'
-            ? incomingCommissionFixed
-            : outgoingCommissionFixed);
-    const fare = discountedFare + commission;
 
-    // Broadcast dispatch to the nearest 5 available drivers simultaneously.
-    // The first driver to accept wins the ride. 10-minute acceptance window.
-    const MAX_OFFERED_DRIVERS = 5;
-    const DISPATCH_TIMER_SECONDS = 600;
+    const { baseFare, commission, finalFare } = calculateFullTripFare(distance, requestedVehicleType, stats, appliedDiscount);
+    const fare = finalFare;
+
+    // Broadcast dispatch to up to 50 available drivers in the region simultaneously.
+    // The first driver to accept wins the ride. 3-minute acceptance window (180s).
+    const MAX_OFFERED_DRIVERS = 50;
+    const DISPATCH_TIMER_SECONDS = 180;
 
     let currentOfferedDriverId: string | undefined = undefined;
     let offeredDriverIds: string[] = [];
@@ -1541,15 +1707,23 @@ export default function App() {
       eligibleDrivers = drivers.filter(d => d.approvalStatus === 'APPROVED' && d.isOnline && d.status === 'AVAILABLE');
     }
 
-    // Filter drivers by the pickup region the rider selected (independent of the map).
+    // Filter drivers by the pickup region selected by rider.
     // Only drivers whose coverage areas include the selected region receive the request.
     const selectedRegion = regions.find(r => r.id === selectedPickupRegion);
-    if (selectedRegion) {
-      eligibleDrivers = eligibleDrivers.filter(d =>
-        (d.serviceAreas || []).some(
-          sa => sa === selectedRegion.nameAr || sa === selectedRegion.nameEn
-        )
-      );
+    if (selectedRegion && selectedRegion.id !== 'all') {
+      eligibleDrivers = eligibleDrivers.filter(d => {
+        if (!d.serviceAreas || d.serviceAreas.length === 0) return true; // covers all regions by default
+        return d.serviceAreas.some(
+          sa =>
+            sa === selectedRegion.nameAr ||
+            sa === selectedRegion.nameEn ||
+            sa === selectedRegion.id ||
+            sa === 'جميع المناطق' ||
+            sa === 'All Regions' ||
+            sa === 'كل المناطق' ||
+            sa.includes('بني سويف')
+        );
+      });
     }
 
     const dispatchTimer = DISPATCH_TIMER_SECONDS;
@@ -1643,7 +1817,7 @@ export default function App() {
     if (!activeTrip) return;
 
     const newMessage = {
-      id: `msg_${Date.now()}`,
+      id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       sender,
       text,
       timestamp: new Date().toLocaleTimeString(lang === 'ar' ? 'ar-EG' : 'en-US', { hour: '2-digit', minute: '2-digit' }),
@@ -1652,40 +1826,41 @@ export default function App() {
     setActiveTripWithTracking((prev) => {
       if (!prev) return null;
       const chatMessages = prev.chatMessages ? [...prev.chatMessages, newMessage] : [newMessage];
-      return { ...prev, chatMessages };
+      const updated = { ...prev, chatMessages };
+      if (supabaseConnected) {
+        saveActiveTrip(updated).catch(() => {});
+      }
+      return updated;
     });
   };
 
   // Handler: Cancel Ride
   const handleCancelRide = () => {
-    if (!activeTrip) return;
-    const { driverId } = activeTrip;
+    if (activeTrip) {
+      dismissedTripIdsRef.current.add(activeTrip.id);
+      const { driverId } = activeTrip;
 
-    if (driverId) {
-      setDrivers((prev) =>
-        prev.map((d) => (d.id === driverId ? { ...d, status: 'AVAILABLE' } : d))
-      );
-    }
+      if (driverId) {
+        setDrivers((prev) =>
+          prev.map((d) => (d.id === driverId ? { ...d, status: 'AVAILABLE' } : d))
+        );
+      }
 
-    const cancelledTrip = { 
-      ...activeTrip, 
-      status: 'CANCELLED' as TripStatus, 
-      completedAt: new Date().toISOString() 
-    };
+      const cancelledTrip = { 
+        ...activeTrip, 
+        status: 'CANCELLED' as TripStatus, 
+        completedAt: new Date().toISOString() 
+      };
 
-    // Save cancelled trip to history so it shows in طلبات الرحلات
-    setTripsHistory((prev) => [cancelledTrip, ...prev]);
+      // Save cancelled trip to history so it shows in طلبات الرحلات
+      setTripsHistory((prev) => [cancelledTrip, ...prev]);
 
-    if (supabaseConnected) {
-      saveActiveTrip(cancelledTrip).then((ok) => {
-        console.log('[handleCancelRide] Saved cancelled trip to DB, result:', ok);
-        // Save to history table as well
+      if (supabaseConnected) {
         saveTripToHistory(cancelledTrip);
-        // Clear from DB after saving cancelled status
-        setTimeout(() => {
-          saveActiveTrip(null);
-        }, 500);
-      });
+        saveActiveTrip(null).then((ok) => {
+          console.log('[handleCancelRide] Cleared active trip from DB, result:', ok);
+        });
+      }
     }
 
     setActiveTripWithTracking(null);
@@ -1746,31 +1921,81 @@ export default function App() {
   };
 
   // Handler: Driver Accepts Trip Manually
-  const handleAcceptTrip = async (driverId: string) => {
-    if (!activeTrip || activeTrip.status !== 'SEARCHING') return;
+  const handleAcceptTrip = async (tripIdOrDriverId: string) => {
+    let driverId = selectedDriverId;
+    let targetTrip = activeTrip;
+
+    // If tripId was passed, match target trip from pendingTrips or activeTrip
+    if (tripIdOrDriverId && tripIdOrDriverId.startsWith('trip_')) {
+      const foundPending = pendingTrips.find((t) => t.id === tripIdOrDriverId);
+      if (foundPending) {
+        targetTrip = foundPending;
+      }
+    } else if (tripIdOrDriverId && drivers.some((d) => d.id === tripIdOrDriverId)) {
+      driverId = tripIdOrDriverId;
+    }
+
+    if (!driverId) return;
+    const drv = drivers.find((d) => d.id === driverId);
+
+    // 🛡️ Guard 1: Prevent offline drivers from accepting trips
+    if (!drv?.isOnline) {
+      triggerToast(
+        lang === 'ar' ? 'أنت غير متصل حالياً' : 'Driver Offline',
+        lang === 'ar' ? 'قم بتفعيل زر الاتصال (أونلاين) أولاً لقبول المشوار.' : 'Please go online first to accept rides.',
+        'warning'
+      );
+      return;
+    }
+
+    // 🛡️ Guard 2: Prevent driver over-assignment (driver cannot accept a new trip until current trip ends)
+    if (activeTrip && activeTrip.driverId === driverId && ['ACCEPTED', 'ARRIVED', 'STARTED'].includes(activeTrip.status)) {
+      triggerToast(
+        lang === 'ar' ? 'لديك رحلة جارية بالفعل' : 'Active Ride in Progress',
+        lang === 'ar' ? 'لا يمكنك قبول رحلة جديدة حتى إنهاء رحلتك الحالية.' : 'You cannot accept a new trip until your current trip ends.',
+        'warning'
+      );
+      return;
+    }
+
+    if (!targetTrip || targetTrip.status !== 'SEARCHING') return;
 
     // mark driver busy locally and persist
     setDrivers((prev) =>
       prev.map((d) => (d.id === driverId ? { ...d, status: 'BUSY' } : d))
     );
 
-    const drv = drivers.find((d) => d.id === driverId);
+    const acceptedTrip: Trip = {
+      ...targetTrip,
+      status: 'ACCEPTED',
+      driverId,
+      driverName: drv?.name,
+    };
 
-    // set accepted state immediately for optimistic UX
-    setActiveTripWithTracking((prev) => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        status: 'ACCEPTED',
-        driverId,
-        driverName: drv?.name,
-      };
-    });
+    // set accepted state immediately for optimistic UX and save to Supabase
+    setActiveTripWithTracking(acceptedTrip);
+    setPendingTrips((prev) => prev.filter((t) => t.id !== acceptedTrip.id));
 
-    if (drv && supabaseConnected) {
-      // persist driver busy state
-      saveDriver({ ...drv, status: 'BUSY' }).then((ok) => {
-        console.log('[handleAcceptTrip] saveDriver status BUSY result:', ok);
+    if (supabaseConnected) {
+      if (drv) {
+        saveDriver({ ...drv, status: 'BUSY' }).catch(() => {});
+      }
+      saveActiveTrip(acceptedTrip).then((ok) => {
+        console.log('[handleAcceptTrip] saveActiveTrip ACCEPTED result:', ok);
+        if (!ok) {
+          // Race condition lost — another driver accepted first! Revert local state.
+          console.warn('[handleAcceptTrip] Race lost to another driver.');
+          setActiveTripWithTracking(null);
+          setDrivers((prev) =>
+            prev.map((d) => (d.id === driverId ? { ...d, status: 'AVAILABLE' } : d))
+          );
+          if (drv) saveDriver({ ...drv, status: 'AVAILABLE' }).catch(() => {});
+          triggerToast(
+            lang === 'ar' ? '⚠️ المشوار لم يعد متاحاً' : '⚠️ Ride No Longer Available',
+            lang === 'ar' ? 'عذراً، قام سائق آخر بقبول هذه الرحلة قبلك بنفس اللحظة!' : 'Sorry, another driver accepted this ride first!',
+            'warning'
+          );
+        }
       });
     }
 
@@ -1782,28 +2007,19 @@ export default function App() {
       if (driverLat !== undefined && driverLng !== undefined) {
         const route = await getNavigationRoute(driverLat, driverLng, activeTrip.pickup, activeTrip.dropoff);
         if (route) {
-          setActiveTripWithTracking((prev) => {
-            if (!prev) return null;
-            const updated = {
-              ...prev,
-              routeGeometry: route.geometry,
-              etaMinutes: route.durationSeconds ? Math.ceil(route.durationSeconds / 60) : prev.etaMinutes,
-            } as Trip;
-            if (supabaseConnected) {
-              saveActiveTrip(updated).then((ok) => console.log('[handleAcceptTrip] saveActiveTrip result:', ok));
-            }
-            return updated;
-          });
-        } else {
-          // fallback: still persist the accepted state
-          if (supabaseConnected) saveActiveTrip(activeTrip).then((ok) => console.log('[handleAcceptTrip] saveActiveTrip (no route) result:', ok));
+          const routeUpdated: Trip = {
+            ...acceptedTrip,
+            routeGeometry: route.geometry,
+            etaMinutes: route.durationSeconds ? Math.ceil(route.durationSeconds / 60) : acceptedTrip.etaMinutes,
+          };
+          setActiveTripWithTracking(routeUpdated);
+          if (supabaseConnected) {
+            saveActiveTrip(routeUpdated).then((ok) => console.log('[handleAcceptTrip] saveActiveTrip route result:', ok));
+          }
         }
-      } else {
-        if (supabaseConnected) saveActiveTrip(activeTrip).then((ok) => console.log('[handleAcceptTrip] saveActiveTrip (no coords) result:', ok));
       }
     } catch (err) {
       console.warn('[handleAcceptTrip] route calculation failed:', err);
-      if (supabaseConnected) saveActiveTrip(activeTrip).then((ok) => console.log('[handleAcceptTrip] saveActiveTrip (error) result:', ok));
     }
 
     if (drv) {
@@ -1884,7 +2100,14 @@ export default function App() {
   };
 
   const handleArrivedAtPickup = () => {
-    setActiveTripWithTracking((prev) => (prev ? { ...prev, status: 'ARRIVED' } : null));
+    setActiveTripWithTracking((prev) => {
+      if (!prev) return null;
+      const updated = { ...prev, status: 'ARRIVED' as TripStatus };
+      if (supabaseConnected) {
+        saveActiveTrip(updated);
+      }
+      return updated;
+    });
   };
 
   const handleStartTrip = () => {
@@ -1913,14 +2136,57 @@ export default function App() {
             : d
         )
       );
-      return { ...prev, status: 'STARTED' };
+      const updated = { ...prev, status: 'STARTED' as TripStatus };
+      if (supabaseConnected) {
+        saveActiveTrip(updated);
+      }
+      return updated;
     });
   };
 
   const handleEndTrip = () => {
     setActiveTripWithTracking((prev) => {
       if (!prev || prev.status !== 'STARTED') return prev;
-      const completed = { ...prev, status: 'COMPLETED' as TripStatus, completedAt: new Date().toISOString() };
+
+      const { driverId, fare, commission } = prev;
+      const netEarnings = fare - commission;
+
+      // Deduct rider balance
+      setRider((r) => ({
+        ...r,
+        balance: Math.max(0, r.balance - fare),
+      }));
+
+      // Update driver stats: add net earnings, add commission paid, set status AVAILABLE
+      if (driverId) {
+        setDrivers((ds) =>
+          ds.map((d) => {
+            if (d.id !== driverId) return d;
+            return {
+              ...d,
+              status: 'AVAILABLE',
+              totalTrips: d.totalTrips + 1,
+              totalEarnings: d.totalEarnings + netEarnings,
+              totalCommissionPaid: d.totalCommissionPaid + commission,
+            };
+          })
+        );
+      }
+
+      // Update system admin statistics
+      setStats((s) => ({
+        ...s,
+        totalRevenue: s.totalRevenue + fare,
+        totalCommission: s.totalCommission + commission,
+        totalCompletedTrips: s.totalCompletedTrips + 1,
+      }));
+
+      const completed: Trip = {
+        ...prev,
+        status: 'COMPLETED' as TripStatus,
+        completedAt: new Date().toISOString(),
+      };
+
       setRouteCache((cache) => {
         const { pickup, dropoff } = completed;
         const key = `${pickup.lat.toFixed(4)}_${pickup.lng.toFixed(4)}_${dropoff.lat.toFixed(4)}_${dropoff.lng.toFixed(4)}`;
@@ -1928,92 +2194,133 @@ export default function App() {
         delete next[key];
         return next;
       });
+
+      setTripsHistory((history) => [completed, ...history]);
+
+      if (supabaseConnected) {
+        saveActiveTrip(completed);
+        saveTripToHistory(completed);
+      }
+
       return completed;
     });
   };
 
-  // Handler: Rider rates driver and finalizes transaction
-  const handleRateDriver = (rating: number, tags?: string[], comment?: string) => {
-    if (!activeTrip || !activeTrip.driverId) return;
+   // Handler: Rider rates driver
+   const handleRateDriver = (rating: number, tags?: string[], comment?: string) => {
+     if (!activeTrip || !activeTrip.driverId) return;
 
-    const { driverId, fare, commission } = activeTrip;
-    const netEarnings = fare - commission;
+     const { driverId } = activeTrip;
 
-    // Deduct rider balance
-    setRider((prev) => ({
-      ...prev,
-      balance: Math.max(0, prev.balance - fare),
-    }));
+     // Update driver rating with proper average based on number of trips
+     setDrivers((prev) =>
+       prev.map((d) => {
+         if (d.id !== driverId) return d;
+         const totalTrips = d.totalTrips || 1;
+         const nextRating = parseFloat(((d.rating * (totalTrips - 1) + rating) / totalTrips).toFixed(1));
+         const updatedDrv = {
+           ...d,
+           rating: nextRating,
+         };
+         if (supabaseConnected) {
+           saveDriver(updatedDrv);
+         }
+         return updatedDrv;
+       })
+     );
 
-    // Update driver stats: add net earnings, add commission paid to admin ledger
-    setDrivers((prev) =>
-      prev.map((d) => {
-        if (d.id !== driverId) return d;
-        const nextTripsCount = d.totalTrips + 1;
-        const nextRating = parseFloat(((d.rating * 4 + rating) / 5).toFixed(1));
-        return {
-          ...d,
-          status: 'AVAILABLE',
-          totalTrips: nextTripsCount,
-          totalEarnings: d.totalEarnings + netEarnings,
-          totalCommissionPaid: d.totalCommissionPaid + commission,
-          rating: nextRating,
-        };
-      })
-    );
+     const updatedTrip: Trip = {
+       ...activeTrip,
+       riderRatingToDriver: rating,
+       riderFeedbackTags: tags,
+       riderFeedbackComment: comment,
+     };
 
-    // Update system admin statistics
-    setStats((prev) => ({
-      ...prev,
-      totalRevenue: prev.totalRevenue + fare,
-      totalCommission: prev.totalCommission + commission,
-      totalCompletedTrips: prev.totalCompletedTrips + 1,
-    }));
+     setActiveTripWithTracking(updatedTrip);
+     setNoAvailableDrivers(false);
 
-    const finalizedTrip = {
-      ...activeTrip,
-      status: 'COMPLETED' as const,
-      completedAt: new Date().toISOString(),
-      riderRatingToDriver: rating,
-      riderFeedbackTags: tags,
-      riderFeedbackComment: comment,
-    };
+     setTripsHistory((prev) =>
+       prev.map((t) => (t.id === updatedTrip.id ? updatedTrip : t))
+     );
 
-    setTripsHistory((prev) => [finalizedTrip, ...prev]);
+     if (supabaseConnected) {
+       saveActiveTrip(updatedTrip);
+       saveTripToHistory(updatedTrip);
+     }
+
+     // Announce rating to both driver and rider via speech
+     speakText('تم التقييم. شكراً لاستخدام تطبيق الكابتن، رحلة سعيدة!', 'ar-EG');
+
+     // Notify driver about the rating via native notification
+     sendNativeNotification(
+       lang === 'ar' ? '⭐ تقييم جديد من العميل' : '⭐ New Rating from Rider',
+       lang === 'ar'
+         ? `لقد قيّمك العميل ${activeTrip.riderName} بـ ${rating} نجوم.`
+         : `Rider ${activeTrip.riderName} rated you ${rating} stars.`,
+       '⭐'
+     );
+   };
+
+   // Handler: Driver rates rider
+   const handleRateRider = (rating: number, tags?: string[], comment?: string) => {
+     if (!activeTrip) return;
+
+     // Update rider rating with proper average based on number of trips
+     setRider((prev) => {
+       const totalTrips = prev.totalTrips || 1;
+       const currentRating = prev.rating || 5.0;
+       const nextRating = parseFloat(((currentRating * (totalTrips - 1) + rating) / totalTrips).toFixed(1));
+       const updatedRider = {
+         ...prev,
+         rating: nextRating,
+         totalTrips: totalTrips,
+       };
+       if (supabaseConnected) {
+         saveRider(updatedRider);
+       }
+       return updatedRider;
+     });
+
+     const updatedTrip: Trip = {
+       ...activeTrip,
+       driverRatingToRider: rating,
+       driverFeedbackTags: tags,
+       driverFeedbackComment: comment,
+     };
+
+     setActiveTripWithTracking(updatedTrip);
+
+     setTripsHistory((prev) =>
+       prev.map((t) => (t.id === updatedTrip.id ? updatedTrip : t))
+     );
+
+     if (supabaseConnected) {
+       saveActiveTrip(updatedTrip);
+       saveTripToHistory(updatedTrip);
+     }
+
+     // Announce rating to both driver and rider via speech
+     speakText('تم التقييم. شكراً لاستخدام تطبيق الكابتن، رحلة سعيدة!', 'ar-EG');
+
+     // Notify rider about the rating via native notification
+     sendNativeNotification(
+       lang === 'ar' ? '⭐ تقييم جديد من الكابتن' : '⭐ New Rating from Driver',
+       lang === 'ar'
+         ? `لقد قيّمك الكابتن ${activeTrip.driverName || 'عز الدين'} بـ ${rating} نجوم.`
+         : `Driver ${activeTrip.driverName || 'Ezz'} rated you ${rating} stars.`,
+       '⭐'
+     );
+   };
+
+  // Handler: Dismiss completed trip and reset active view
+  const handleDismissCompletedTrip = () => {
+    if (activeTrip) {
+      dismissedTripIdsRef.current.add(activeTrip.id);
+    }
     setActiveTripWithTracking(null);
     setNoAvailableDrivers(false);
-
     if (supabaseConnected) {
-      saveTripToHistory(finalizedTrip);
-    }
-  };
-
-  // Handler: Driver rates rider
-  const handleRateRider = (rating: number, tags?: string[], comment?: string) => {
-    if (!activeTrip) return;
-
-    const updatedTrip = {
-      ...activeTrip,
-      driverRatingToRider: rating,
-      driverFeedbackTags: tags,
-      driverFeedbackComment: comment,
-    };
-
-    setActiveTripWithTracking(updatedTrip);
-
-    setRider((prev) => {
-      const nextTrips = (prev.totalTrips || 0) + 1;
-      const currentRating = prev.rating || 5.0;
-      const nextRating = parseFloat(((currentRating * 4 + rating) / 5).toFixed(1));
-      return {
-        ...prev,
-        rating: nextRating,
-        totalTrips: nextTrips,
-      };
-    });
-
-    if (supabaseConnected) {
-      saveTripToHistory(updatedTrip);
+      saveActiveTrip(null);
     }
   };
 
@@ -2175,6 +2482,23 @@ export default function App() {
   const handleDeleteDriver = async (driverId: string) => {
     setDrivers(prev => prev.filter(d => d.id !== driverId));
     await deleteDriverInDB(driverId);
+  };
+
+  const handleAddBalanceToDriver = async (driverId: string, amount: number) => {
+    const driver = drivers.find((d) => d.id === driverId);
+    if (!driver) return;
+    const newBal = (driver.walletBalance ?? 0) + amount;
+    setDrivers((prev) =>
+      prev.map((d) => (d.id === driverId ? { ...d, walletBalance: newBal } : d))
+    );
+    if (supabaseConnected) {
+      await saveDriver({ ...driver, walletBalance: newBal });
+    }
+    triggerToast(
+      lang === 'ar' ? 'تم شحن المحفظة' : 'Wallet Charged',
+      lang === 'ar' ? `تم إضافة ${amount} ج.م إلى محفظة كابتن ${driver.name}` : `Added ${amount} EGP to ${driver.name}'s wallet`,
+      'success'
+    );
   };
 
   // Rider account management workflows called by Administrator
@@ -2546,7 +2870,15 @@ export default function App() {
         </div>
 
         {/* Global Controls */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <button
+            type="button"
+            onClick={() => openGuideModal('rider')}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-black rounded-xl transition-all shadow-sm cursor-pointer pointer-events-auto"
+          >
+            <span>📖</span>
+            <span>{lang === 'ar' ? 'دليل الاستخدام' : 'User Guide'}</span>
+          </button>
           <button
             type="button"
             onClick={() => setLang(lang === 'ar' ? 'en' : 'ar')}
@@ -2572,54 +2904,59 @@ export default function App() {
             </div>
 
             {/* Virtual Phone Screen Content */}
-            <div className="flex-1 bg-white rounded-[36px] overflow-hidden flex flex-col relative z-10 pt-5">
+            <div className="flex-1 bg-white rounded-[36px] overflow-hidden flex flex-col relative z-10 pt-3">
               
               {/* STATUS BAR WITH NAVIGATION TO HOME */}
-              <div className="bg-slate-950 text-white px-4 py-2.5 flex items-center justify-between text-[11px] font-bold shadow-xs select-none shrink-0">
+              <div className="bg-slate-950 text-white px-3 py-1.5 flex items-center justify-between text-[10px] font-bold shadow-xs select-none shrink-0">
                 <div className="flex items-center gap-1">
                   <span>كابتن عز 🚖</span>
                 </div>
-                {currentScreen !== 'HOME' && (
+                <div className="flex items-center gap-1">
                   <button
-                    onClick={() => setCurrentScreen('HOME')}
-                    className="bg-amber-400 hover:bg-amber-500 text-slate-950 px-2 py-0.5 rounded text-[9px] font-black transition-all flex items-center gap-1 cursor-pointer pointer-events-auto shadow-xs"
+                    onClick={() => openGuideModal(currentScreen.includes('DRIVER') ? 'driver' : 'rider')}
+                    className="bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700 px-1.5 py-0.5 rounded text-[8.5px] font-black transition-all flex items-center gap-0.5 cursor-pointer pointer-events-auto shadow-xs"
+                    title={lang === 'ar' ? 'دليل الاستخدام' : 'Guide'}
                   >
-                    <span>◀</span>
-                    <span>{lang === 'ar' ? 'الرئيسية' : 'Home'}</span>
+                    <span>📖</span>
+                    <span>{lang === 'ar' ? 'الدليل' : 'Guide'}</span>
                   </button>
-                )}
+                  {currentScreen !== 'HOME' && (
+                    <button
+                      onClick={() => setCurrentScreen('HOME')}
+                      className="bg-amber-400 hover:bg-amber-500 text-slate-950 px-1.5 py-0.5 rounded text-[8.5px] font-black transition-all flex items-center gap-0.5 cursor-pointer pointer-events-auto shadow-xs"
+                    >
+                      <span>◀</span>
+                      <span>{lang === 'ar' ? 'الرئيسية' : 'Home'}</span>
+                    </button>
+                  )}
+                </div>
               </div>
 
-
-
-              {/* PWA Install Promo Banner */}
+              {/* PWA Install Promo Banner (Ultra Compact) */}
               {!installDismissed && (
-                <div className="bg-slate-900 text-white p-2 border-b border-amber-400/30 flex items-center justify-between gap-2 shrink-0 animate-fade-in relative z-20">
-                  <div className="flex items-center gap-2 text-right">
-                    <div className="w-8 h-8 rounded-lg bg-amber-400 flex items-center justify-center text-lg shadow-sm shrink-0">
+                <div className="bg-slate-900 text-white py-1 px-2.5 border-b border-amber-400/30 flex items-center justify-between gap-1.5 shrink-0 animate-fade-in relative z-20">
+                  <div className="flex items-center gap-1.5 text-right min-w-0">
+                    <div className="w-6 h-6 rounded-md bg-amber-400 flex items-center justify-center text-xs shadow-xs shrink-0">
                       🚖
                     </div>
-                    <div>
-                      <p className="text-[9.5px] font-black text-amber-400 leading-tight">
+                    <div className="min-w-0">
+                      <p className="text-[9px] font-black text-amber-400 leading-tight truncate">
                         {lang === 'ar' ? 'تثبيت كابتن عز كأيقونة 📱' : 'Install Captain Ezz 📱'}
-                      </p>
-                      <p className="text-[8px] text-slate-300 leading-none mt-0.5">
-                        {lang === 'ar' ? 'للوصول السريع بنقرة واحدة' : 'Instant one-tap bookings'}
                       </p>
                     </div>
                   </div>
                   
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 shrink-0">
                     <button
                       onClick={() => setShowInstallWizard(true)}
-                      className="px-2 py-0.5 bg-amber-400 hover:bg-amber-500 text-slate-950 font-extrabold text-[8px] rounded-md shadow-xs pointer-events-auto cursor-pointer flex items-center gap-0.5"
+                      className="px-2 py-0.5 bg-amber-400 hover:bg-amber-500 text-slate-950 font-extrabold text-[8px] rounded-md shadow-2xs pointer-events-auto cursor-pointer flex items-center gap-0.5"
                     >
                       <span>⚡</span>
                       <span>{lang === 'ar' ? 'تثبيت' : 'Install'}</span>
                     </button>
                     <button
                       onClick={() => setInstallDismissed(true)}
-                      className="text-slate-400 hover:text-white p-1 pointer-events-auto text-[10px] leading-none"
+                      className="text-slate-400 hover:text-white p-0.5 pointer-events-auto text-[9px] leading-none"
                     >
                       ✕
                     </button>
@@ -2819,31 +3156,40 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Collapsible Terms and conditions */}
-                    <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shrink-0">
-                      <button
-                        onClick={() => setTermsOpen(!termsOpen)}
-                        className="w-full p-2.5 flex items-center justify-between text-[10px] font-bold text-slate-700 focus:outline-none cursor-pointer pointer-events-auto"
-                      >
-                        <span>⚖️ {lang === 'ar' ? 'الشروط والأحكام' : 'Terms & Conditions'}</span>
-                        <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${termsOpen ? 'rotate-180' : ''}`} />
-                      </button>
-                      {termsOpen && (
-                        <div className="p-3 border-t border-slate-50 text-[9px] text-slate-500 space-y-1.5 leading-relaxed bg-slate-50/50">
-                          <p>
-                            <strong>{lang === 'ar' ? 'سياسة تقديم الخدمة:' : 'Service Delivery Policy:'}</strong>{' '}
-                            {lang === 'ar'
-                              ? 'يلتزم كباتن تطبيق عز بتقديم خدمة نقل آمنة ومريحة لجميع الركاب، مع اتباع القواعد العامة وأخلاقيات العمل.'
-                              : 'Captain Ezz drivers commit to providing safe and convenient rides, adhering to general policies.'}
-                          </p>
-                          <p>
-                            <strong>{lang === 'ar' ? 'المستندات المطلوبة:' : 'Onboarding Requirements:'}</strong>{' '}
-                            {lang === 'ar'
-                              ? 'يجب على كل سائق جديد تقديم الاسم ثنائي، رقم رخصة السيارة، ورقم البطاقة القومية المكون من 14 رقماً، وتخضع جميع الحسابات لمراجعة المدير قبل التفعيل.'
-                              : 'Drivers must provide real-world dual name, license plate numbers, and verified 14-digit national identity records.'}
-                          </p>
-                        </div>
-                      )}
+                    {/* Legal Terms & Privacy Section */}
+                    <div className="bg-white border border-slate-200/80 rounded-2xl p-3 shrink-0 space-y-2 shadow-xs">
+                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-800 border-b border-slate-100 pb-2">
+                        <span className="flex items-center gap-1">⚖️ {lang === 'ar' ? 'الشروط والسياسات الرسمية' : 'Terms & Privacy'}</span>
+                        <span className="text-[9px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                          {lang === 'ar' ? 'محدثة لعام 2026' : 'Updated 2026'}
+                        </span>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={openLegalTerms}
+                          className="py-2 px-2.5 bg-amber-50 hover:bg-amber-100/80 text-amber-900 border border-amber-200/80 rounded-xl text-[10px] font-bold transition-all text-center flex items-center justify-center gap-1 pointer-events-auto cursor-pointer"
+                        >
+                          <span>⚖️</span>
+                          <span>{lang === 'ar' ? 'الشروط والأحكام' : 'Terms & Conditions'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={openLegalPrivacy}
+                          className="py-2 px-2.5 bg-emerald-50 hover:bg-emerald-100/80 text-emerald-900 border border-emerald-200/80 rounded-xl text-[10px] font-bold transition-all text-center flex items-center justify-center gap-1 pointer-events-auto cursor-pointer"
+                        >
+                          <span>🔒</span>
+                          <span>{lang === 'ar' ? 'سياسة الخصوصية' : 'Privacy Policy'}</span>
+                        </button>
+                      </div>
+
+                      <p className="text-[9px] text-slate-500 text-center leading-relaxed">
+                        {lang === 'ar' 
+                          ? 'استخدام التطبيق يتضمن موافقتك الكاملة على شروط الخدمة وحماية الخصوصية.' 
+                          : 'Using the app constitutes acceptance of terms and privacy policy.'}
+                      </p>
                     </div>
                   </div>
                 )}
@@ -2975,9 +3321,27 @@ export default function App() {
 
                             {/* Rider Terms of service explicitly requested */}
                             <div className="p-2.5 bg-slate-100 rounded-xl border border-slate-200 text-[8.5px] text-slate-600 space-y-1.5 leading-relaxed font-medium">
-                              <div className="font-extrabold text-slate-800 text-[9px]">⚖️ شروط وسياسات الراكب:</div>
+                              <div className="flex items-center justify-between font-extrabold text-slate-800 text-[9px]">
+                                <span>⚖️ شروط وسياسات الراكب:</span>
+                                <div className="flex gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={openLegalTerms}
+                                    className="text-amber-700 underline hover:text-amber-900 pointer-events-auto cursor-pointer"
+                                  >
+                                    الشروط والأحكام
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={openLegalPrivacy}
+                                    className="text-emerald-700 underline hover:text-emerald-900 pointer-events-auto cursor-pointer"
+                                  >
+                                    سياسة الخصوصية
+                                  </button>
+                                </div>
+                              </div>
                               <p>
-                                يلتزم الراكب بالصدق والأمانة والاحترام الكامل للسائق ودفع الأجرة كاملة للسائق كما هي موضحة من خلال التطبيق، وفي حالة عدم الالتزام سيتم إيقاف الحساب نهائياً.
+                                يلتزم الراكب بإدخال بيانات الرحلة بشكل صحيح، واحترام السائق وعدم الإساءة إليه، وسداد قيمة الرحلة كما هي موضحة داخل التطبيق، والمحافظة على سلامة المركبة.
                               </p>
                               <div className="flex items-start gap-2 pt-1">
                                 <input
@@ -2985,10 +3349,10 @@ export default function App() {
                                   id="riderAgreed"
                                   checked={riderFormAgreed}
                                   onChange={(e) => setRiderFormAgreed(e.target.checked)}
-                                  className="mt-0.5 accent-amber-500 pointer-events-auto"
+                                  className="mt-0.5 accent-amber-500 pointer-events-auto cursor-pointer"
                                 />
                                 <label htmlFor="riderAgreed" className="text-[8.5px] text-slate-700 font-extrabold cursor-pointer select-none">
-                                  لقد قرأ�� سياسات الراكب بالكامل وأتعهد بالالتزام بها
+                                  لقد قرأ سياسات الراكب بالكامل وأتعهد بالالتزام بها
                                 </label>
                               </div>
                             </div>
@@ -3025,6 +3389,7 @@ export default function App() {
                        drivers={drivers}
                        tripsHistory={tripsHistory}
                        activeTrip={activeTrip}
+                       ads={ads}
                        selectedPickup={selectedPickup}
                        selectedDropoff={selectedDropoff}
                        selectedPickupRegion={selectedPickupRegion}
@@ -3033,6 +3398,7 @@ export default function App() {
                        setSelectedDropoff={setSelectedDropoff}
                         onRequestRide={handleRequestRide}
                         onCancelRide={handleCancelRide}
+                        onDismissCompletedTrip={handleDismissCompletedTrip}
                         onRateDriver={handleRateDriver}
                        onUpdateLocations={setLocations}
                        lang={lang}
@@ -3042,6 +3408,7 @@ export default function App() {
                        onEnableLowData={enableLowData}
                        onDisableLowData={disableLowData}
                        noAvailableDrivers={noAvailableDrivers}
+                       onOpenGuide={openGuideModal}
                          onLogout={() => {
                             setRider(prev => ({ ...prev, isLoggedIn: false }));
                             clearSession('RIDER');
@@ -3385,9 +3752,27 @@ export default function App() {
 
                               {/* Driver Terms Box with precise statement from user */}
                               <div className="p-2.5 bg-slate-100 rounded-xl border border-slate-200 text-[8px] text-slate-600 space-y-1.5 leading-relaxed font-medium">
-                                <div className="font-extrabold text-slate-800 text-[9px]">⚖️ الشروط والأحكام الخاصة بالكباتن:</div>
+                                <div className="flex items-center justify-between font-extrabold text-slate-800 text-[9px]">
+                                  <span>⚖️ الشروط والأحكام الخاصة بالكباتن:</span>
+                                  <div className="flex gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={openLegalTerms}
+                                      className="text-amber-700 underline hover:text-amber-900 pointer-events-auto cursor-pointer"
+                                    >
+                                      الشروط والأحكام
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={openLegalPrivacy}
+                                      className="text-emerald-700 underline hover:text-emerald-900 pointer-events-auto cursor-pointer"
+                                    >
+                                      سياسة الخصوصية
+                                    </button>
+                                  </div>
+                                </div>
                                 <p className="text-slate-500 text-justify">
-                                  أوافق على أن هذه البيانات سرية ولا يجوز التعامل مع العملاء بطريقة غير شرعية، وعدم خيانة الأمانة، وعدم مضايقة العملاء بأي شكل، وممنوع منعاً باتاً التجاوز الجنسي أو اللفظي، وفي حالة طلب بيانات السا��ق تكون فقط من خلال الجهات الحكومية والجهات الرسمية المختصة. كما أوافق على الالتزام بدفع العمولات المستمرة أولاً بأول بهدف تطوير التطبيق ومواصلة جذب العملاء. وفي حالة مخالفة أي بند سيتم إيقاف الحساب نهائياً.
+                                  أوافق على أن هذه البيانات سرية ولا يجوز التعامل مع العملاء بطريقة غير شرعية، وعدم خيانة الأمانة، وعدم مضايقة العملاء بأي شكل، وممنوع منعاً باتاً التجاوز الجنسي أو اللفظي، وفي حالة طلب بيانات الساق تكون فقط من خلال الجهات الحكومية والجهات الرسمية المختصة. كما أوافق على الالتزام بدفع العمولات المستمرة أولاً بأول بهدف تطوير التطبيق ومواصلة جذب العملاء. وفي حالة مخالفة أي بند سيتم إيقاف الحساب نهائياً.
                                 </p>
                                 <div className="flex items-start gap-2 pt-1">
                                   <input
@@ -3430,6 +3815,8 @@ export default function App() {
                 {currentScreen === 'DRIVER_DASHBOARD' && (
                     <DriverView
                       drivers={drivers}
+                      tripsHistory={tripsHistory}
+                      pendingTrips={pendingTrips}
                       selectedDriverId={selectedDriverId}
                       setSelectedDriverId={setSelectedDriverId}
                       onUpdateDriver={handleUpdateDriver}
@@ -3445,7 +3832,8 @@ export default function App() {
                      onArrivedAtPickup={handleArrivedAtPickup}
                      onStartTrip={handleStartTrip}
                      onEndTrip={handleEndTrip}
-                     onRateRider={handleRateDriver}
+                     onRateRider={handleRateRider}
+                     onDismissCompletedTrip={handleDismissCompletedTrip}
                      lang={lang}
                      onSendChatMessage={handleSendChatMessage}
                      stats={stats}
@@ -3455,6 +3843,7 @@ export default function App() {
                      driverLat={drivers.find(d => d.id === selectedDriverId)?.lat}
                      driverLng={drivers.find(d => d.id === selectedDriverId)?.lng}
                      onCalculateNavigationRoute={getNavigationRoute}
+                     onOpenGuide={openGuideModal}
                        onLogout={() => {
                           // Auto-set driver offline in Supabase
                           if (supabaseConnected && selectedDriverId) {
@@ -3496,6 +3885,8 @@ export default function App() {
                                 const admin = await authenticateAdmin(adminPhone.trim(), adminPassword.trim());
                                 if (admin) {
                                   setAdminIsLoggedIn(true);
+                                  localStorage.setItem('ezz_admin_phone', adminPhone.trim());
+                                  localStorage.setItem('ezz_admin_password', adminPassword.trim());
                                   if (supabaseConnected) {
                                     await clearSession('RIDER');
                                     await clearSession('DRIVER');
@@ -3576,6 +3967,7 @@ export default function App() {
                        onUnblockRider={handleUnblockRider}
                         onDeleteRider={handleDeleteRider}
                         onAddBalanceToRider={handleAddBalanceToRider}
+                        onAddBalanceToDriver={handleAddBalanceToDriver}
                         onClearAllFakeData={handleClearAllFakeData}
                         lang={lang}
                          onLogout={() => {
@@ -3601,9 +3993,52 @@ export default function App() {
       </main>
 
       {/* Footer */}
-      <footer className="bg-slate-950 border-t border-slate-800 py-3 px-4 text-center text-[10px] text-slate-500 shrink-0">
-        {currentT.footer}
+      <footer className="bg-slate-950 border-t border-slate-800 py-3.5 px-4 text-center text-[10px] text-slate-500 shrink-0 space-y-2">
+        <div className="flex items-center justify-center gap-4 text-xs font-bold text-slate-300">
+          <button
+            type="button"
+            onClick={() => openGuideModal('rider')}
+            className="hover:text-amber-400 underline underline-offset-4 transition-colors cursor-pointer text-amber-400 font-extrabold"
+          >
+            📖 {lang === 'ar' ? 'دليل الاستخدام والتعليمات' : 'User & Driver Guide'}
+          </button>
+          <span className="text-slate-600">•</span>
+          <button
+            type="button"
+            onClick={openLegalTerms}
+            className="hover:text-amber-400 underline underline-offset-4 transition-colors cursor-pointer"
+          >
+            ⚖️ {lang === 'ar' ? 'الشروط والأحكام' : 'Terms & Conditions'}
+          </button>
+          <span className="text-slate-600">•</span>
+          <button
+            type="button"
+            onClick={openLegalPrivacy}
+            className="hover:text-amber-400 underline underline-offset-4 transition-colors cursor-pointer"
+          >
+            🔒 {lang === 'ar' ? 'سياسة الخصوصية' : 'Privacy Policy'}
+          </button>
+        </div>
+        <div>
+          {currentT.footer}
+        </div>
       </footer>
+
+      {/* Interactive User & Driver Guide Modal */}
+      <GuideModal
+        isOpen={showGuideModal}
+        onClose={() => setShowGuideModal(false)}
+        defaultTab={guideModalTab}
+        lang={lang}
+      />
+
+      {/* Global Terms & Conditions & Privacy Policy Modal */}
+      <LegalModal
+        isOpen={showLegalModal}
+        onClose={() => setShowLegalModal(false)}
+        defaultTab={legalModalTab}
+        lang={lang}
+      />
 
       {/* Supabase SQL Setup Wizard Dialog */}
       {showSqlWizard && (
@@ -3726,6 +4161,13 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Firebase Cloud Messaging (FCM) Setup Modal */}
+      <FirebaseFcmModal
+        isOpen={showFcmModal}
+        onClose={() => setShowFcmModal(false)}
+        lang={lang}
+      />
     </div>
   );
 }
