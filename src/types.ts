@@ -56,6 +56,7 @@ export interface Trip {
   dispatchTimerMax?: number;
   appliedPromoCode?: string;
   appliedPromoDiscount?: number;
+  appliedPromoCodeId?: string;
   pickupRegionId?: string;
   pickupRegionName?: string;
 }
@@ -102,6 +103,7 @@ export interface Driver {
   serviceAreas: string[]; // المدن/المناطق اللي السائق بيخدمها (مثلاً: ["العياط", "بني سويف", "القاهرة"])
   autoAccept?: boolean; // هل يقبل الرحلات أوتوماتيكياً
   autoShowMap?: boolean; // هل يعرض الخريطة تلقائياً عند قبول الرحلة
+  walletBalance?: number; // محفظة كابتن عز الشحن المسبق والعمولات
 }
 
 export interface RiderPreferences {
@@ -142,6 +144,7 @@ export interface SystemStats {
   internalCommission?: number;
   externalCommission?: number;
   supportWhatsApp?: string;
+  minRatingThreshold?: number; // حد أدنى للتقييم لحظر السائق تلقائياً أو التنبيه
   shortTripCommission?: number;
   longTripCommission?: number;
   freeKmThreshold?: number;
@@ -205,6 +208,26 @@ export interface Region {
   country: string;
   lat?: number;
   lng?: number;
+  createdAt: string;
+}
+
+export interface Ad {
+  id: string;
+  storeName: string;
+  offerText: string;
+  imageUrl: string;
+  phoneNumber: string;
+  whatsapp?: string;
+  placement: 'home' | 'waiting' | 'popup' | 'all';
+  priority: number;
+  isActive: boolean;
+  startDate?: string;
+  endDate?: string;
+  adFee?: number; // رسوم الإعلان بالجنيه
+  dailyImpressionLimit?: number; // الحد الأقصى للمشاهدات اليومية
+  impressions?: number; // عدد مرات الظهور
+  clicks: number; // عدد مرات الاتصال الهاتفي
+  whatsappClicks?: number; // عدد مرات فتح الواتساب
   createdAt: string;
 }
 
